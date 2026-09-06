@@ -18,9 +18,6 @@ public class Main {
 
         String searchTerm = args.length >= 2 ? args[1].toLowerCase() : null;
 
-        System.out.println(searchTerm);
-        String normalizeTerm = TermNormalizer.normalize(searchTerm);
-        System.out.println(normalizeTerm);
 
         PdfTextExtractor extractor = new PdfTextExtractor();
         DefinitionDetector detector = new DefinitionDetector();
@@ -31,12 +28,12 @@ public class Main {
 
         for (var page : book.pages()){
 
-            var definitions = detector.detectForTerm(page.text(), page.pageNumber(), normalizeTerm);
+            var definitions = detector.detectForTerm(page.text(), page.pageNumber(), searchTerm);
             for(var def : definitions){
                 System.out.println("🔹 ОПРЕДЕЛЕНИЕ [стр. " + def.pageNumber() + "]: " + def.definition());
             }
 
-            var mentions = contextExtractor.findMentions(page.text(), page.pageNumber(), normalizeTerm);
+            var mentions = contextExtractor.findMentions(page.text(), page.pageNumber(), searchTerm);
             for (var mention : mentions) {
                 System.out.println("📖 Упоминание [стр. " + mention.pageNumber() + "]: " + mention.context());
             }

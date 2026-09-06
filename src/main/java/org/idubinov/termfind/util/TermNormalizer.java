@@ -6,10 +6,10 @@ public class TermNormalizer {
 
     private static final russianStemmer STEMMER = new russianStemmer();
 
-    public static String normalize(String term){
-        if (term == null || term.isBlank()) return "";
+    public static String normalize(String text){
+        if (text == null || text.isBlank()) return "";
 
-        String[] words = term.toLowerCase().trim().split("\\s+");
+        String[] words = text.toLowerCase().trim().split("\\s+");
         StringBuilder result = new StringBuilder();
 
         for (String word : words) {
@@ -31,5 +31,11 @@ public class TermNormalizer {
         }
 
         return result.toString().trim();
+    }
+
+    public static boolean containsNormalized(String text, String searchTerm) {
+        String normalizedText = normalize(text);
+        String normalizedSearch = normalize(searchTerm);
+        return normalizedText.contains(normalizedSearch);
     }
 }
