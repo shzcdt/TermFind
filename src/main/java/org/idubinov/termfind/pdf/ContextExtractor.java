@@ -18,7 +18,7 @@ public class ContextExtractor {
             if (paragraph.isBlank()) continue;
 
             if (paragraph.toLowerCase().contains(lowerSearch)) {
-
+                // как-то отделать термин . слова слова термин слова слова.
                 String context = paragraph.trim();
                 if (context.length() > 500){
                     context = context.substring(0, 500) + "...";
