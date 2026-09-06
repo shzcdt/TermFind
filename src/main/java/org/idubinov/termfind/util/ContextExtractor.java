@@ -1,4 +1,4 @@
-package org.idubinov.termfind.pdf;
+package org.idubinov.termfind.util;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -24,14 +24,11 @@ public class ContextExtractor {
         List<Mention> mentions = new ArrayList<>();
 
         String[] paragraphs = pageText.split("\\n\\s*\\n|\\r\\n\\s*\\r\\n");
-
-        String lowerSearch = searchTerm.toLowerCase();
-
         for (String paragraph : paragraphs) {
             if (paragraph.isBlank()) continue;
 
-            if (paragraph.toLowerCase().contains(lowerSearch)) {
-                String context = extractSentenceWithTerm(paragraph.trim(), lowerSearch);
+            if (paragraph.toLowerCase().contains(searchTerm)) {
+                String context = extractSentenceWithTerm(paragraph.trim(), searchTerm);
 
                 mentions.add(new Mention(searchTerm, context, pageNumber, false));
             }

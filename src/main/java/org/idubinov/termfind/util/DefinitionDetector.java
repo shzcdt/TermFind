@@ -1,4 +1,4 @@
-package org.idubinov.termfind.pdf;
+package org.idubinov.termfind.util;
 
 import java.util.ArrayList;
 import java.util.List;

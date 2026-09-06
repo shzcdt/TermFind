@@ -1,8 +1,9 @@
 package org.idubinov.termfind;
 
-import org.idubinov.termfind.pdf.ContextExtractor;
-import org.idubinov.termfind.pdf.DefinitionDetector;
+import org.idubinov.termfind.util.ContextExtractor;
+import org.idubinov.termfind.util.DefinitionDetector;
 import org.idubinov.termfind.pdf.PdfTextExtractor;
+import org.idubinov.termfind.util.TermNormalizer;
 
 import java.io.File;
 
@@ -17,6 +18,9 @@ public class Main {
 
         String searchTerm = args.length >= 2 ? args[1].toLowerCase() : null;
 
+        System.out.println(searchTerm);
+        String normalizeTerm = TermNormalizer.normalize(searchTerm);
+        System.out.println(normalizeTerm);
 
         PdfTextExtractor extractor = new PdfTextExtractor();
         DefinitionDetector detector = new DefinitionDetector();
@@ -27,12 +31,12 @@ public class Main {
 
         for (var page : book.pages()){
 
-            var definitions = detector.detectForTerm(page.text(), page.pageNumber(), searchTerm);
+            var definitions = detector.detectForTerm(page.text(), page.pageNumber(), normalizeTerm);
             for(var def : definitions){
                 System.out.println("🔹 ОПРЕДЕЛЕНИЕ [стр. " + def.pageNumber() + "]: " + def.definition());
             }
 
-            var mentions = contextExtractor.findMentions(page.text(), page.pageNumber(), searchTerm);
+            var mentions = contextExtractor.findMentions(page.text(), page.pageNumber(), normalizeTerm);
             for (var mention : mentions) {
                 System.out.println("📖 Упоминание [стр. " + mention.pageNumber() + "]: " + mention.context());
             }
