@@ -1,9 +1,8 @@
 package org.idubinov.termfind;
 
+import org.idubinov.termfind.pdf.PdfTextExtractor;
 import org.idubinov.termfind.util.ContextExtractor;
 import org.idubinov.termfind.util.DefinitionDetector;
-import org.idubinov.termfind.pdf.PdfTextExtractor;
-import org.idubinov.termfind.util.TermNormalizer;
 
 import java.io.File;
 

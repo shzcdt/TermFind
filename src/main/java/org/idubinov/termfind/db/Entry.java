@@ -1,0 +1,57 @@
+package org.idubinov.termfind.db;
+
+import jakarta.persistence.*;
+
+@Entity
+@Table(name = "entries")
+public class Entry {
+
+    public enum EntryType { DEFINITION, MENTION }
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @ManyToOne(fetch = FetchType.LAZY, optional = false)
+    @JoinColumn(name = "term_id")
+    private Term term;
+
+    @ManyToOne(fetch = FetchType.LAZY, optional = false)
+    @JoinColumn(name = "book_id")
+    private Book book;
+
+    @Column(name = "page_number", nullable = false)
+    private int pageNumber;
+
+    /** Предложение (для DEFINITION) или абзац (для MENTION). */
+    @Column(nullable = false, length = 4000)
+    private String text;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "entry_type", nullable = false)
+    private EntryType type;
+
+    /** false = кандидат от парсера, не проверен человеком; true = проверено вручную. */
+    @Column(nullable = false)
+    private boolean approved;
+
+    public Entry() {
+    }
+
+    public Entry(Term term, Book book, int pageNumber, String text, EntryType type, boolean approved) {
+        this.term = term;
+        this.book = book;
+        this.pageNumber = pageNumber;
+        this.text = text;
+        this.type = type;
+        this.approved = approved;
+    }
+
+    public Long getId() { return id; }
+    public Term getTerm() { return term; }
+    public Book getBook() { return book; }
+    public int getPageNumber() { return pageNumber; }
+    public String getText() { return text; }
+    public EntryType getType() { return type; }
+    public boolean isApproved() { return approved; }
+}
