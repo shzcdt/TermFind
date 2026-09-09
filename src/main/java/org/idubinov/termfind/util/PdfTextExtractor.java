@@ -1,4 +1,4 @@
-package org.idubinov.termfind.pdf;
+package org.idubinov.termfind.util;
 
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;

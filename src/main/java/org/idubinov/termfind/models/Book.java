@@ -1,4 +1,4 @@
-package org.idubinov.termfind.db;
+package org.idubinov.termfind.models;
 
 import jakarta.persistence.*;
 
@@ -8,13 +8,16 @@ public class Book {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
+    @Column(name = "id")
     private Long id;
 
-    @Column(nullable = false)
+    @Column(name = "title", nullable = false)
     private String title;
 
+    @Column(name = "pdf_path")
     private String pdfPath;
 
+    @Column(name = "total_pages")
     private int totalPages;
 
     public Book() {

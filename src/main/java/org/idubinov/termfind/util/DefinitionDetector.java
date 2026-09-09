@@ -19,16 +19,12 @@ public class DefinitionDetector {
                     "([^.;]{10,400})",
             Pattern.CASE_INSENSITIVE);
 
-    private static final Pattern HYPHENATED_LINE_BREAK = Pattern.compile("-\\n");
-    private static final Pattern LINE_BREAK = Pattern.compile("\\n+");
-
     private static final Pattern SENTENCE_TRIM = Pattern.compile("^\\s+|[\\s.,;:–—-]+$");
 
     public List<DefinitionCandidate> detect(String pageText, int pageNumber) {
         List<DefinitionCandidate> candidates = new ArrayList<>();
 
-        String cleaned = LINE_BREAK.matcher(
-                HYPHENATED_LINE_BREAK.matcher(pageText).replaceAll("")).replaceAll(" ");
+        String cleaned = TextCleaner.clean(pageText);
 
         Matcher matcher = DEFINITION_PATTERN.matcher(cleaned);
 

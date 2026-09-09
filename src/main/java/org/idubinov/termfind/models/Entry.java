@@ -1,4 +1,4 @@
-package org.idubinov.termfind.db;
+package org.idubinov.termfind.models;
 
 import jakarta.persistence.*;
 
@@ -10,6 +10,7 @@ public class Entry {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
+    @Column(name = "id")
     private Long id;
 
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
@@ -23,7 +24,6 @@ public class Entry {
     @Column(name = "page_number", nullable = false)
     private int pageNumber;
 
-    /** Предложение (для DEFINITION) или абзац (для MENTION). */
     @Column(nullable = false, length = 4000)
     private String text;
 
@@ -31,7 +31,6 @@ public class Entry {
     @Column(name = "entry_type", nullable = false)
     private EntryType type;
 
-    /** false = кандидат от парсера, не проверен человеком; true = проверено вручную. */
     @Column(nullable = false)
     private boolean approved;
 

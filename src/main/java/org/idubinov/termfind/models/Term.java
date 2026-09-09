@@ -1,4 +1,4 @@
-package org.idubinov.termfind.db;
+package org.idubinov.termfind.models;
 
 import jakarta.persistence.*;
 
@@ -8,14 +8,13 @@ public class Term {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
+    @Column(name = "id")
     private Long id;
 
-    /** Как термин напечатан в книге, например «тензором ранга N». */
-    @Column(nullable = false)
+    @Column(name = "display_form", nullable = false)
     private String displayForm;
 
-    /** Нормальная форма после стемминга («тенз ранг») — по ней идет поиск. */
-    @Column(nullable = false, unique = true)
+    @Column(name = "normalized_form", nullable = false, unique = true)
     private String normalizedForm;
 
     public Term() {
