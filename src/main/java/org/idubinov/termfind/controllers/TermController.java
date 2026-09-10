@@ -21,7 +21,7 @@ public class TermController {
     }
 
     @GetMapping("/search")
-    public Map<String, Object> search(@RequestParam("term") String term) {
+    public Map<String, Object> search(@RequestParam(name = "term") String term) {
         long start = System.currentTimeMillis();
         List<Entry> entries = searchService.search(term);
 

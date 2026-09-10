@@ -5,7 +5,6 @@ import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-
 public class DefinitionDetector {
 
     public record DefinitionCandidate(String term, String definition, int pageNumber) {
