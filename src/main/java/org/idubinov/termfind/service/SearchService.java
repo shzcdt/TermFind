@@ -10,6 +10,7 @@ import org.idubinov.termfind.repositories.TermRepository;
 import org.idubinov.termfind.util.DefinitionDetector;
 import org.idubinov.termfind.util.TextCleaner;
 import org.idubinov.termfind.util.TermNormalizer;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -17,20 +18,16 @@ import java.io.File;
 import java.util.List;
 import java.util.Optional;
 
-/**
- * Динамическая схема: пользователь вводит термин → если он уже в БД, отдаем что есть;
- * если нет — прогоняем книги и индексируем ТОЛЬКО этот термин (без мусорных слов).
- * Все новые вхождения получают approved=false и ждут проверки.
- */
 @Service
 public class SearchService {
 
     private final TermRepository termRepository;
     private final EntryRepository entryRepository;
     private final BookRepository bookRepository;
-    private final PdfTextExtractor extractor = new PdfTextExtractor();
-    private final DefinitionDetector detector = new DefinitionDetector();
+    private final PdfTextExtractor pdfTextExtractor = new PdfTextExtractor();
+    private final DefinitionDetector definitionDetector = new DefinitionDetector();
 
+    @Autowired
     public SearchService(TermRepository termRepository,
                          EntryRepository entryRepository,
                          BookRepository bookRepository) {
@@ -61,26 +58,24 @@ public class SearchService {
 
     private void indexTermInBook(Book book, Term term, String normalizedQuery) {
         try {
-            PdfTextExtractor.BookText bookText = extractor.extract(new File(book.getPdfPath()));
+            PdfTextExtractor.BookText bookText = pdfTextExtractor.extract(new File(book.getPdfPath()));
 
             for (PdfTextExtractor.PageText page : bookText.pages()) {
                 if (page.isEmpty()) continue;
 
-                // Определения: кандидат регэкспа, чей термин содержит запрос
-                for (var candidate : detector.detect(page.text(), page.pageNumber())) {
+                for (var candidate : definitionDetector.detect(page.text(), page.pageNumber())) {
                     if (TermNormalizer.containsNormalized(candidate.term(), normalizedQuery)) {
                         entryRepository.save(new Entry(term, book, page.pageNumber(),
                                 candidate.definition(), Entry.EntryType.DEFINITION, false));
                     }
                 }
 
-                // Упоминания: предложения, содержащие термин (по нормальным формам)
                 String[] sentences = TextCleaner.sentences(TextCleaner.clean(page.text()));
                 for (String sentence : sentences) {
                     if (TermNormalizer.containsNormalized(sentence, normalizedQuery)) {
                         entryRepository.save(new Entry(term, book, page.pageNumber(),
                                 sentence.trim(), Entry.EntryType.MENTION, false));
-                        break; // не более одного упоминания на страницу
+                        break;
                     }
                 }
             }

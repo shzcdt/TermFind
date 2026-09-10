@@ -12,7 +12,6 @@ public class ContextExtractor {
         String[] sentences = paragraph.split("(?<=[.!?])\\s+(?=[А-ЯA-Z])");
 
         for (String sentence : sentences) {
-
             if (TermNormalizer.containsNormalized(sentence, lowerSearchTerm)){
                 return sentence.trim();
             }
