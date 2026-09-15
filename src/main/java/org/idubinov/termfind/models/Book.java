@@ -33,4 +33,20 @@ public class Book {
     public String getTitle() { return title; }
     public String getPdfPath() { return pdfPath; }
     public int getTotalPages() { return totalPages; }
+
+    public void setId(Long id) {
+        this.id = id;
+    }
+
+    public void setTitle(String title) {
+        this.title = title;
+    }
+
+    public void setPdfPath(String pdfPath) {
+        this.pdfPath = pdfPath;
+    }
+
+    public void setTotalPages(int totalPages) {
+        this.totalPages = totalPages;
+    }
 }

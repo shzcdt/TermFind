@@ -28,4 +28,16 @@ public class Term {
     public Long getId() { return id; }
     public String getDisplayForm() { return displayForm; }
     public String getNormalizedForm() { return normalizedForm; }
+
+    public void setId(Long id) {
+        this.id = id;
+    }
+
+    public void setDisplayForm(String displayForm) {
+        this.displayForm = displayForm;
+    }
+
+    public void setNormalizedForm(String normalizedForm) {
+        this.normalizedForm = normalizedForm;
+    }
 }

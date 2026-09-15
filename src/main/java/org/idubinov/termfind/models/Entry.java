@@ -53,4 +53,32 @@ public class Entry {
     public String getText() { return text; }
     public EntryType getType() { return type; }
     public boolean isApproved() { return approved; }
+
+    public void setId(Long id) {
+        this.id = id;
+    }
+
+    public void setTerm(Term term) {
+        this.term = term;
+    }
+
+    public void setBook(Book book) {
+        this.book = book;
+    }
+
+    public void setPageNumber(int pageNumber) {
+        this.pageNumber = pageNumber;
+    }
+
+    public void setText(String text) {
+        this.text = text;
+    }
+
+    public void setType(EntryType type) {
+        this.type = type;
+    }
+
+    public void setApproved(boolean approved) {
+        this.approved = approved;
+    }
 }
