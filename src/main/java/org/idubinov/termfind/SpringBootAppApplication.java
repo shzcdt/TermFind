@@ -12,6 +12,6 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 @EntityScan("org.idubinov.termfind.models")
 public class SpringBootAppApplication {
     public static void main(String[] args) {
-        SpringApplication.run(SpringBootApplication.class, args);
+        SpringApplication.run(SpringBootAppApplication.class, args);
     }
 }

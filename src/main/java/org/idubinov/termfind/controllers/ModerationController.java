@@ -1,21 +1,18 @@
 package org.idubinov.termfind.controllers;
 
 import org.idubinov.termfind.models.Entry;
-import org.idubinov.termfind.repositories.EntryRepository;
 import org.idubinov.termfind.service.EntryService;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.stereotype.Controller;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Map;
 
-@Controller
+@RestController
 @RequestMapping("/api/moderation")
 public class ModerationController {
 
-    private EntryService entryService;
+    private final EntryService entryService;
 
     @Autowired
     public ModerationController(EntryService entryService) {
@@ -23,9 +20,29 @@ public class ModerationController {
     }
 
     @GetMapping("/pending")
-    public String pending(@RequestParam(name = "term") String term) {
+    public Map<String, Object> pending(@RequestParam(name = "term") String term) {
         List<Entry> entries = entryService.findNotApprovedEntriesByTerm(term);
 
-        return "";
+        return Map.of(
+                "term", term,
+                "pending", entries.size(),
+                "results", entries.stream().map(e -> Map.of(
+                        "id", e.getId(),
+                        "type", e.getType().name(),
+                        "page", e.getPageNumber(),
+                        "book", e.getBook().getTitle(),
+                        "text", e.getText()
+                )).toList()
+        );
+    }
+
+
+    @PostMapping("/approve/{id}")
+    public Map<String, Object> approve(@PathVariable Long id) {
+        boolean approved = entryService.approveEntry(id);
+        return Map.of(
+                "id", id,
+                "approved", approved
+        );
     }
 }

@@ -6,7 +6,7 @@ plugins {
 }
 
 application {
-    mainClass.set("org.idubinov.termfind.config.SpringConfig")
+    mainClass.set("org.idubinov.termfind.SpringBootAppApplication")
 }
 
 group = "org.idubinov.example"
