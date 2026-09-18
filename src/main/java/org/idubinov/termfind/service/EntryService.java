@@ -22,7 +22,7 @@ public class EntryService {
 
     public List<Entry> findNotApprovedEntriesByTerm(String query) {
         String normalizedQuery = TermNormalizer.normalize(query);
-        return entryRepository.findByTermNormalizedFormAndApprovedFalseOrderByTypeAscPageNumberAsc(normalizedQuery);
+        return entryRepository.findNotApprovedWithBookByTermNormalizedForm(normalizedQuery);
     }
 
     @Transactional

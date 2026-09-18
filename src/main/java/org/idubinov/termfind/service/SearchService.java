@@ -44,7 +44,7 @@ public class SearchService {
 
         Optional<Term> existing = termRepository.findByNormalizedForm(normalizedQuery);
         if (existing.isPresent()) {
-            return entryRepository.findByTermNormalizedFormOrderByTypeAscPageNumberAsc(normalizedQuery);
+            return entryRepository.findWithBookByTermNormalizedForm(normalizedQuery);
         }
 
         Term term = termRepository.save(new Term(query.trim(), normalizedQuery));
@@ -54,7 +54,7 @@ public class SearchService {
             indexTermInBook(book, term, normalizedQuery);
         }
 
-        return entryRepository.findByTermNormalizedFormOrderByTypeAscPageNumberAsc(normalizedQuery);
+        return entryRepository.findWithBookByTermNormalizedForm(normalizedQuery);
     }
 
     private void indexTermInBook(Book book, Term term, String normalizedQuery) {
