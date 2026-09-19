@@ -17,6 +17,10 @@ public class Term {
     @Column(name = "normalized_form", nullable = false, unique = true)
     private String normalizedForm;
 
+    /** true = модерация завершена: закреплены нужные вхождения, остальные удалены, аппрувы больше недоступны. */
+    @Column(name = "finalized", nullable = false)
+    private boolean finalized = false;
+
     public Term() {
     }
 
@@ -28,6 +32,11 @@ public class Term {
     public Long getId() { return id; }
     public String getDisplayForm() { return displayForm; }
     public String getNormalizedForm() { return normalizedForm; }
+    public boolean isFinalized() { return finalized; }
+
+    public void setFinalized(boolean finalized) {
+        this.finalized = finalized;
+    }
 
     public void setId(Long id) {
         this.id = id;

@@ -1,6 +1,7 @@
 package org.idubinov.termfind.bot;
 
 import org.idubinov.termfind.models.Entry;
+import org.idubinov.termfind.models.Term;
 import org.idubinov.termfind.service.EntryService;
 import org.idubinov.termfind.service.SearchService;
 import org.slf4j.Logger;
@@ -10,23 +11,24 @@ import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 import org.telegram.telegrambots.bots.TelegramLongPollingBot;
 import org.telegram.telegrambots.meta.api.methods.AnswerCallbackQuery;
+import org.telegram.telegrambots.meta.api.methods.send.SendDocument;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
 import org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageText;
 import org.telegram.telegrambots.meta.api.objects.CallbackQuery;
+import org.telegram.telegrambots.meta.api.objects.InputFile;
 import org.telegram.telegrambots.meta.api.objects.Message;
 import org.telegram.telegrambots.meta.api.objects.Update;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup;
-import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton;
 import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
 import org.telegram.telegrambots.updatesreceivers.DefaultBotSession;
 
-import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
 /**
- * Telegram-бот: пользователь шлет термин — бот возвращает определения и упоминания.
- * Для админа у определений есть кнопка «Подтвердить» (модерация).
- * Long polling стартует в конструкторе; при пустом токене бот отключен.
+ * Telegram-бот: пользователь шлет термин — бот возвращает определения и упоминания
+ * (отдельными сообщениями, полными текстами). Для админа — кнопки ✅ на каждое
+ * вхождение и 🔒 финализация термина. Long polling стартует по ApplicationReadyEvent.
  */
 @Component
 public class TermFindBot extends TelegramLongPollingBot {
@@ -42,7 +44,7 @@ public class TermFindBot extends TelegramLongPollingBot {
         this.searchService = searchService;
         this.entryService = entryService;
         // ВНИМАНИЕ: не регистрируем бота в конструкторе — long polling начнет обрабатывать
-        // апдейты до готовности Spring-контекста (LazyInitialization/IllegalStateException).
+        // апдейты до готовности Spring-контекста (IllegalStateException).
     }
 
     /** Регистрация long polling — только когда контекст полностью готов. */
@@ -76,7 +78,7 @@ public class TermFindBot extends TelegramLongPollingBot {
             if (update.hasMessage() && update.getMessage().hasText()) {
                 handleSearch(update.getMessage());
             } else if (update.hasCallbackQuery()) {
-                handleApprove(update.getCallbackQuery());
+                handleCallback(update.getCallbackQuery());
             }
         } catch (Exception e) {
             // ошибка одного апдейта не должна ронять поток polling
@@ -89,41 +91,81 @@ public class TermFindBot extends TelegramLongPollingBot {
         long chatId = message.getChatId();
 
         List<Entry> entries = searchService.search(term);
+        boolean isAdmin = chatId == config.adminId();
+        Optional<Term> termEntity = entryService.findTermByQuery(term);
+        boolean finalized = termEntity.map(Term::isFinalized).orElse(false);
 
-        SendMessage sendMessage = SendMessage.builder()
+        // Показываем пользователю только отфильтрованное и отсортированное;
+        // кнопки модерации — по всем вхождениям (админ видит и то, что фильтр отбросил)
+        List<Entry> presentable = entryService.presentable(term);
+
+        InlineKeyboardMarkup keyboard = finalized
+                ? null
+                : BotMessageFormatter.buildModerationKeyboard(entries, chatId, config.adminId(),
+                        termEntity.map(Term::getId).orElse(null));
+        SendMessage header = SendMessage.builder()
                 .chatId(chatId)
-                .text(BotMessageFormatter.formatAnswer(term, entries))
+                .text(BotMessageFormatter.buildHeader(term, presentable, finalized))
                 .build();
-
-        InlineKeyboardMarkup keyboard = BotMessageFormatter.approveKeyboard(entries, chatId, config.adminId());
         if (keyboard != null) {
-            sendMessage.setReplyMarkup(keyboard);
+            header.setReplyMarkup(keyboard);
         }
-        executeSilently(sendMessage);
+        executeSilently(header);
+
+        // Файл с полными текстами отфильтрованных вхождений
+        if (!presentable.isEmpty()) {
+            sendDocument(chatId, ReportExporter.fileName(term),
+                    ReportExporter.export(term, presentable, entries.size() - presentable.size()));
+        }
     }
 
-    private void handleApprove(CallbackQuery callbackQuery) {
+    private void sendDocument(long chatId, String fileName, byte[] content) {
+        try {
+            execute(SendDocument.builder()
+                    .chatId(chatId)
+                    .document(new InputFile(new java.io.ByteArrayInputStream(content), fileName))
+                    .build());
+        } catch (TelegramApiException e) {
+            log.error("Не удалось отправить файл отчета", e);
+        }
+    }
+
+    private void handleCallback(CallbackQuery callbackQuery) {
         if (callbackQuery.getFrom().getId() != config.adminId()) {
             return; // модерировать может только админ
         }
 
-        String data = callbackQuery.getData(); // формат "approve:<id>"
-        if (data == null || !data.startsWith("approve:")) return;
-        long entryId = Long.parseLong(data.substring("approve:".length()));
+        String data = callbackQuery.getData();
+        if (data == null) return;
 
-        boolean approved = entryService.approveEntry(entryId);
+        if (data.startsWith("approve:")) {
+            long entryId = Long.parseLong(data.substring("approve:".length()));
+            boolean approved = entryService.approveEntry(entryId);
+            answerCallback(callbackQuery.getId(), approved ? "✅ Подтверждено" : "Нельзя: термин финализирован или не найден");
+            if (approved && callbackQuery.getMessage() != null) {
+                editMessage(callbackQuery.getMessage().getMessageId(),
+                        callbackQuery.getMessage().getChatId(),
+                        "✅ Вхождение " + entryId + " подтверждено");
+            }
+        } else if (data.startsWith("finalize:")) {
+            long termId = Long.parseLong(data.substring("finalize:".length()));
+            boolean finalized = entryService.finalizeTerm(termId);
+            answerCallback(callbackQuery.getId(), finalized ? "🔒 Термин финализирован" : "Не найдено");
+            if (finalized && callbackQuery.getMessage() != null) {
+                editMessage(callbackQuery.getMessage().getMessageId(),
+                        callbackQuery.getMessage().getChatId(),
+                        "🔒 Термин финализирован: неподтвержденные вхождения удалены, " +
+                                "остались только ✅. Аппрувы больше недоступны.");
+            }
+        }
+    }
 
+    private void answerCallback(String callbackId, String text) {
         executeSilently(AnswerCallbackQuery.builder()
-                .callbackQueryId(callbackQuery.getId())
-                .text(approved ? "✅ Подтверждено" : "Не найдено")
+                .callbackQueryId(callbackId)
+                .text(text)
                 .showAlert(false)
                 .build());
-
-        if (approved && callbackQuery.getMessage() != null) {
-            editMessage(callbackQuery.getMessage().getMessageId(),
-                    callbackQuery.getMessage().getChatId(),
-                    "✅ Вхождение " + entryId + " подтверждено");
-        }
     }
 
     private void executeSilently(SendMessage message) {
@@ -153,5 +195,4 @@ public class TermFindBot extends TelegramLongPollingBot {
             log.error("Не удалось отредактировать сообщение", e);
         }
     }
-
 }

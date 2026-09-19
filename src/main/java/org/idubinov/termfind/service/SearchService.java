@@ -44,6 +44,8 @@ public class SearchService {
 
         Optional<Term> existing = termRepository.findByNormalizedForm(normalizedQuery);
         if (existing.isPresent()) {
+            // финализированный термин «запомнен»: переиндексация запрещена,
+            // в БД уже остались только утвержденные вхождения
             return entryRepository.findWithBookByTermNormalizedForm(normalizedQuery);
         }
 

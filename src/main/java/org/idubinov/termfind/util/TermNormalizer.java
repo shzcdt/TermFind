@@ -18,7 +18,7 @@ public class TermNormalizer {
                 continue;
             }
 
-            word = word.replace("^[^а-яa-z0-9]+|[^а-яa-z0-9]+$", "");
+            word = word.replaceAll("^[^а-яa-z0-9]+|[^а-яa-z0-9]+$", "");
 
             if (!word.isEmpty()){
                 STEMMER.setCurrent(word);

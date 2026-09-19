@@ -25,4 +25,7 @@ public interface EntryRepository extends JpaRepository<Entry, Long> {
             "where e.term.normalizedForm = :normalizedForm and e.approved = false " +
             "order by e.type asc, e.pageNumber asc")
     List<Entry> findNotApprovedWithBookByTermNormalizedForm(@Param("normalizedForm") String normalizedForm);
+
+    /** Финализация: удалить все неподтвержденные вхождения термина. Требует транзакции. */
+    void deleteByTermIdAndApprovedFalse(Long termId);
 }
