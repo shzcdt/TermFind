@@ -28,4 +28,8 @@ public interface EntryRepository extends JpaRepository<Entry, Long> {
 
     /** Финализация: удалить все неподтвержденные вхождения термина. Требует транзакции. */
     void deleteByTermIdAndApprovedFalse(Long termId);
+
+    /** Вхождение с предзагруженными term/book — для callback-обработчиков вне веб-контекста. */
+    @Query("select e from Entry e join fetch e.term join fetch e.book where e.id = :id")
+    java.util.Optional<Entry> findWithBookById(@Param("id") Long id);
 }

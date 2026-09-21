@@ -92,6 +92,10 @@ public class EntryService {
         }).orElse(false);
     }
 
+    public Optional<Entry> findEntryWithBook(Long id) {
+        return entryRepository.findWithBookById(id);
+    }
+
     public Optional<Term> findTermByQuery(String query) {
         return termRepository.findByNormalizedForm(TermNormalizer.normalize(query));
     }

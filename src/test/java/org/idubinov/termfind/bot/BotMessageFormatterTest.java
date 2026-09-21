@@ -33,30 +33,32 @@ class BotMessageFormatterTest {
 
     @Test
     void emptyResultSaysNotFound() {
-        String header = BotMessageFormatter.buildHeader("чушь", List.of(), false);
+        String header = BotMessageFormatter.buildCard("чушь", List.of(), false);
         assertTrue(header.contains("ничего не найдено"));
     }
 
     @Test
     void headerContainsStatsAndTeaserDefinitions() {
-        String header = BotMessageFormatter.buildHeader("тензор",
+        String header = BotMessageFormatter.buildCard("тензор",
                 List.of(
                         entry(1, Entry.EntryType.DEFINITION, false, 14, "определение тензора"),
                         entry(2, Entry.EntryType.MENTION, false, 50, "упоминание")),
                 false);
 
-        assertTrue(header.contains("найдено 2 вхождений"));
+        assertTrue(header.contains("Найдено: 2"));
         assertTrue(header.contains("определений: 1"));
         assertTrue(header.contains("упоминаний: 1"));
-        assertTrue(header.contains("стр. 14")); // тизер определения
-        assertTrue(header.contains("файле"));   // указание на отчет
+        assertTrue(header.contains("ОПРЕДЕЛЕНИЕ"));
+        assertTrue(header.contains("стр. 14")); // лучшее определение
+        assertTrue(header.contains("Полный отчет"));
     }
 
     @Test
     void finalizedHeaderContainsLockNote() {
-        String header = BotMessageFormatter.buildHeader("тензор",
+        String header = BotMessageFormatter.buildCard("тензор",
                 List.of(entry(1, Entry.EntryType.DEFINITION, true, 14, "определение")), true);
-        assertTrue(header.contains("финализирован"));
+        assertTrue(header.contains("🔒"));
+        assertTrue(header.contains("<b>ТЕНЗОР</b>"));
     }
 
     // ---------- клавиатура ----------
@@ -128,5 +130,28 @@ class BotMessageFormatterTest {
         String content = new String(ReportExporter.export("тензор", entries, 5), StandardCharsets.UTF_8);
         assertTrue(content.contains("упоминание 100"), "все 100 вхождений в одном файле");
         assertTrue(content.contains("УПОМИНАНИЯ (100)"));
+    }
+
+    @Test
+    void cardEscapesHtmlInTexts() {
+        String header = BotMessageFormatter.buildCard("тензор",
+                List.of(entry(1, Entry.EntryType.DEFINITION, false, 14, "определение с <тегом> и & символом")),
+                false);
+        assertFalse(header.contains("<тегом>"));
+        assertTrue(header.contains("&lt;тегом&gt;"));
+    }
+
+    @Test
+    void cardShowsAlternativeDefinitions() {
+        String header = BotMessageFormatter.buildCard("тензор",
+                List.of(
+                        entry(1, Entry.EntryType.DEFINITION, false, 14, "первое определение тензора"),
+                        entry(2, Entry.EntryType.DEFINITION, false, 30, "второе определение тензора"),
+                        entry(3, Entry.EntryType.MENTION, false, 50, "упоминание")),
+                false);
+        assertTrue(header.contains("ОПРЕДЕЛЕНИЕ"));
+        assertTrue(header.contains("ТАК ЖЕ ГОВОРЯТСЯ"));
+        assertTrue(header.contains("стр. 30"));
+        assertTrue(header.contains("ВСТРЕЧАЕТСЯ"));
     }
 }

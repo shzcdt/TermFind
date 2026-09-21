@@ -13,11 +13,14 @@ import org.telegram.telegrambots.bots.TelegramLongPollingBot;
 import org.telegram.telegrambots.meta.api.methods.AnswerCallbackQuery;
 import org.telegram.telegrambots.meta.api.methods.send.SendDocument;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
+import org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageReplyMarkup;
 import org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageText;
 import org.telegram.telegrambots.meta.api.objects.CallbackQuery;
 import org.telegram.telegrambots.meta.api.objects.InputFile;
 import org.telegram.telegrambots.meta.api.objects.Message;
 import org.telegram.telegrambots.meta.api.objects.Update;
+import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup;
+import org.telegram.telegrambots.meta.api.methods.ParseMode;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup;
 import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
 import org.telegram.telegrambots.updatesreceivers.DefaultBotSession;
@@ -105,17 +108,35 @@ public class TermFindBot extends TelegramLongPollingBot {
                         termEntity.map(Term::getId).orElse(null));
         SendMessage header = SendMessage.builder()
                 .chatId(chatId)
-                .text(BotMessageFormatter.buildHeader(term, presentable, finalized))
+                .text(BotMessageFormatter.buildCard(term, presentable, finalized))
+                .parseMode(ParseMode.HTML)
                 .build();
         if (keyboard != null) {
             header.setReplyMarkup(keyboard);
         }
-        executeSilently(header);
+        sendWithHtmlFallback(header);
 
         // Файл с полными текстами отфильтрованных вхождений
         if (!presentable.isEmpty()) {
             sendDocument(chatId, ReportExporter.fileName(term),
                     ReportExporter.export(term, presentable, entries.size() - presentable.size()));
+        }
+    }
+
+    /** Отправка с HTML; если Telegram не принял разметку — повтор без parseMode. */
+    private void sendWithHtmlFallback(SendMessage message) {
+        try {
+            execute(message);
+        } catch (TelegramApiException e) {
+            log.warn("Не удалось отправить с HTML-разметкой, повторяю без неё: {}", e.getMessage());
+            try {
+                execute(SendMessage.builder()
+                        .chatId(message.getChatId())
+                        .text(message.getText())
+                        .build());
+            } catch (TelegramApiException e2) {
+                log.error("Не удалось отправить сообщение", e2);
+            }
         }
     }
 
@@ -141,11 +162,12 @@ public class TermFindBot extends TelegramLongPollingBot {
         if (data.startsWith("approve:")) {
             long entryId = Long.parseLong(data.substring("approve:".length()));
             boolean approved = entryService.approveEntry(entryId);
-            answerCallback(callbackQuery.getId(), approved ? "✅ Подтверждено" : "Нельзя: термин финализирован или не найден");
+            answerCallback(callbackQuery.getId(),
+                    approved ? "✅ Подтверждено — можно отметить ещё" : "Нельзя: термин финализирован или не найден");
+
+            // Текст карточки не трогаем; из клавиатуры убираем только нажатую кнопку
             if (approved && callbackQuery.getMessage() != null) {
-                editMessage(callbackQuery.getMessage().getMessageId(),
-                        callbackQuery.getMessage().getChatId(),
-                        "✅ Вхождение " + entryId + " подтверждено");
+                updateModerationKeyboard(callbackQuery.getMessage(), entryId);
             }
         } else if (data.startsWith("finalize:")) {
             long termId = Long.parseLong(data.substring("finalize:".length()));
@@ -157,6 +179,28 @@ public class TermFindBot extends TelegramLongPollingBot {
                         "🔒 Термин финализирован: неподтвержденные вхождения удалены, " +
                                 "остались только ✅. Аппрувы больше недоступны.");
             }
+        }
+    }
+
+    /** Перестраивает клавиатуру сообщения: без только что подтвержденной кнопки. */
+    private void updateModerationKeyboard(Message message, long approvedEntryId) {
+        try {
+            Optional<Entry> approvedEntry = entryService.findEntryWithBook(approvedEntryId);
+            if (approvedEntry.isEmpty()) return;
+
+            Term term = approvedEntry.get().getTerm();
+            List<Entry> remaining = entryService.findNotApprovedEntriesByTerm(term.getDisplayForm());
+            InlineKeyboardMarkup newKeyboard = BotMessageFormatter.buildModerationKeyboard(
+                    remaining, config.adminId(), config.adminId(),
+                    term.isFinalized() ? null : term.getId());
+
+            execute(EditMessageReplyMarkup.builder()
+                    .chatId(message.getChatId())
+                    .messageId(message.getMessageId())
+                    .replyMarkup(newKeyboard)
+                    .build());
+        } catch (TelegramApiException e) {
+            log.error("Не удалось обновить клавиатуру", e);
         }
     }
 

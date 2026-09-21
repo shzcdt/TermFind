@@ -17,10 +17,13 @@ public final class BotMessageFormatter {
     private BotMessageFormatter() {
     }
 
-    /** Короткая шапка-карточка: лучшее определение + страницы упоминаний + статистика. */
-    public static String buildHeader(String term, List<Entry> entries, boolean termFinalized) {
+    /**
+     * Карточка термина (HTML): заголовок, лучшее определение, альтернативные формулировки,
+     * страницы упоминаний. Экранирование HTML — обязанность вызывающего текста, здесь экранируем сами.
+     */
+    public static String buildCard(String term, List<Entry> entries, boolean termFinalized) {
         if (entries == null || entries.isEmpty()) {
-            return "❌ По запросу «" + term + "» ничего не найдено.";
+            return "❌ По запросу «" + esc(term) + "» ничего не найдено.";
         }
 
         List<Entry> definitions = entries.stream()
@@ -31,36 +34,47 @@ public final class BotMessageFormatter {
                 .toList();
 
         StringBuilder sb = new StringBuilder();
-        sb.append("📘 «").append(term).append("» — найдено ").append(entries.size())
-                .append(" вхождений (определений: ").append(definitions.size())
+        sb.append("📘 <b>").append(esc(term.toUpperCase())).append("</b>");
+        if (termFinalized) sb.append(" 🔒");
+        sb.append("\nНайдено: ").append(entries.size())
+                .append(" (определений: ").append(definitions.size())
                 .append(", упоминаний: ").append(mentions.size()).append(")\n");
-        if (termFinalized) {
-            sb.append("🔒 Термин финализирован — показаны только утвержденные вхождения\n");
-        }
 
-        // 🎯 Лучшее определение: approved уже отсортированы первыми, берем первое
+        // 🎯 Лучшее определение (approved уже отсортированы первыми)
         if (!definitions.isEmpty()) {
             Entry best = definitions.get(0);
-            sb.append("\n🎯 Лучшее определение (").append(best.getBook().getTitle())
-                    .append(", стр. ").append(best.getPageNumber()).append("):\n")
-                    .append(snippet(best.getText(), 400)).append('\n');
+            sb.append("\n🎯 <b>ОПРЕДЕЛЕНИЕ</b>\n")
+                    .append("<i>").append(esc(best.getBook().getTitle()))
+                    .append(", стр. ").append(best.getPageNumber()).append("</i>\n")
+                    .append(esc(snippet(best.getText(), 600))).append('\n');
         }
 
-        // 📚 Где встречается: страницы упоминаний
+        // 📌 Альтернативные формулировки — следующие по скору
+        if (definitions.size() > 1) {
+            sb.append("\n📌 <b>ТАК ЖЕ ГОВОРЯТСЯ</b>\n");
+            definitions.stream().skip(1).limit(2).forEach(e ->
+                    sb.append("• «").append(esc(snippet(e.getText(), 90))).append("» — ")
+                            .append("<i>").append(esc(e.getBook().getTitle()))
+                            .append(", стр. ").append(e.getPageNumber()).append("</i>\n"));
+        }
+
+        // 📚 Где встречается
         if (!mentions.isEmpty()) {
-            sb.append("\n📚 Также встречается: ");
-            sb.append(mentions.stream()
-                    .map(e -> String.valueOf(e.getPageNumber()))
-                    .distinct()
-                    .limit(12)
-                    .collect(java.util.stream.Collectors.joining(", ")));
-            long totalPages = mentions.stream().map(Entry::getPageNumber).distinct().count();
-            if (totalPages > 12) sb.append("…");
+            List<Integer> pages = mentions.stream().map(Entry::getPageNumber).distinct().toList();
+            sb.append("\n📚 <b>ВСТРЕЧАЕТСЯ</b>: ");
+            pages.stream().limit(12).forEach(p -> sb.append(p).append(", "));
+            sb.setLength(sb.length() - 2);
+            if (pages.size() > 12) sb.append("… (+").append(pages.size() - 12).append(")");
             sb.append('\n');
         }
 
-        sb.append("\n📄 Полный отчет — во вложенном файле\n");
+        sb.append("\n📄 Полный отчет — во вложенном файле");
         return truncate(sb.toString(), MAX_MESSAGE_LENGTH);
+    }
+
+    /** Экранирование HTML-спецсимволов для parseMode=HTML. */
+    public static String esc(String text) {
+        return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
     }
 
     /**
