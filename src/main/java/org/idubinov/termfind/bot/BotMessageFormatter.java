@@ -78,22 +78,27 @@ public final class BotMessageFormatter {
     }
 
     /**
-     * Клавиатура модерации: ✅ на каждое неподтвержденное вхождение (оба типа)
-     * + 🔒 финализация. Только для админа и только нефинализированных терминов.
+     * Клавиатура: строка на каждое неподтвержденное вхождение — [✅ апрув] [🖼 показать страницу],
+     * для approved — только [🖼]. Отдельной строкой — 🔒 финализация.
+     * Только для админа; кнопка 🖼 должна быть видна всем — для нее см. buildViewKeyboard.
      * @param termId id термина для кнопки финализации (null — кнопку не добавлять)
      */
     public static InlineKeyboardMarkup buildModerationKeyboard(List<Entry> entries,
                                                                long viewerId, long adminId, Long termId) {
-        if (viewerId != adminId) return null;
+        if (viewerId != adminId) return buildViewKeyboard(entries);
 
         List<List<InlineKeyboardButton>> rows = new java.util.ArrayList<>();
         for (Entry e : entries) {
-            if (e.isApproved()) continue;
-            rows.add(List.of(InlineKeyboardButton.builder()
-                    .text("✅ " + (e.getType() == Entry.EntryType.DEFINITION ? "Опр." : "Упом.")
-                            + " стр. " + e.getPageNumber())
-                    .callbackData("approve:" + e.getId())
-                    .build()));
+            List<InlineKeyboardButton> row = new java.util.ArrayList<>(2);
+            if (!e.isApproved()) {
+                row.add(InlineKeyboardButton.builder()
+                        .text("✅ " + (e.getType() == Entry.EntryType.DEFINITION ? "Опр." : "Упом.")
+                                + " стр. " + e.getPageNumber())
+                        .callbackData("approve:" + e.getId())
+                        .build());
+            }
+            row.add(viewPageButton(e));
+            rows.add(row);
         }
         if (termId != null) {
             rows.add(List.of(InlineKeyboardButton.builder()
@@ -102,6 +107,22 @@ public final class BotMessageFormatter {
                     .build()));
         }
         return rows.isEmpty() ? null : new InlineKeyboardMarkup(rows);
+    }
+
+    /** Только кнопки просмотра страниц — для обычных пользователей. */
+    public static InlineKeyboardMarkup buildViewKeyboard(List<Entry> entries) {
+        List<List<InlineKeyboardButton>> rows = new java.util.ArrayList<>();
+        for (Entry e : entries) {
+            rows.add(List.of(viewPageButton(e)));
+        }
+        return rows.isEmpty() ? null : new InlineKeyboardMarkup(rows);
+    }
+
+    private static InlineKeyboardButton viewPageButton(Entry e) {
+        return InlineKeyboardButton.builder()
+                .text("🖼 стр. " + e.getPageNumber())
+                .callbackData("page:" + e.getId())
+                .build();
     }
 
     private static String snippet(String text, int max) {

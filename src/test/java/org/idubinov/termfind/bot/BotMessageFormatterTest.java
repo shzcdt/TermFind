@@ -64,11 +64,14 @@ class BotMessageFormatterTest {
     // ---------- клавиатура ----------
 
     @Test
-    void keyboardIsNullForNonAdmin() {
+    void nonAdminGetsOnlyViewButtons() {
         InlineKeyboardMarkup keyboard = BotMessageFormatter.buildModerationKeyboard(
                 List.of(entry(1, Entry.EntryType.DEFINITION, false, 14, "текст")),
                 999L, ADMIN_ID, 7L);
-        assertNull(keyboard);
+        assertNotNull(keyboard);
+        List<String> callbacks = keyboard.getKeyboard().stream()
+                .map(row -> row.get(0).getCallbackData()).toList();
+        assertEquals(List.of("page:1"), callbacks);
     }
 
     @Test
@@ -81,18 +84,22 @@ class BotMessageFormatterTest {
                 ADMIN_ID, ADMIN_ID, 7L);
 
         assertNotNull(keyboard);
-        List<String> callbacks = keyboard.getKeyboard().stream()
-                .map(row -> row.get(0).getCallbackData()).toList();
-        assertEquals(List.of("approve:1", "approve:2", "finalize:7"), callbacks,
-                "кнопки: оба неподтвержденных вхождения + финализация");
+        List<List<org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton>> rows = keyboard.getKeyboard();
+        assertEquals("approve:1", rows.get(0).get(0).getCallbackData());
+        assertEquals("page:1", rows.get(0).get(1).getCallbackData(), "рядом с апрувом — просмотр страницы");
+        assertEquals("approve:2", rows.get(1).get(0).getCallbackData());
+        // approved-вхождение: только кнопка просмотра
+        assertEquals("page:3", rows.get(2).get(0).getCallbackData());
+        assertEquals("finalize:7", rows.get(3).get(0).getCallbackData());
     }
 
     @Test
-    void noKeyboardWhenEverythingApproved() {
+    void approvedEntriesStillHaveViewButton() {
         InlineKeyboardMarkup keyboard = BotMessageFormatter.buildModerationKeyboard(
                 List.of(entry(1, Entry.EntryType.MENTION, true, 50, "текст")),
                 ADMIN_ID, ADMIN_ID, null);
-        assertNull(keyboard);
+        assertNotNull(keyboard);
+        assertEquals("page:1", keyboard.getKeyboard().get(0).get(0).getCallbackData());
     }
 
     // ---------- TXT-отчет ----------

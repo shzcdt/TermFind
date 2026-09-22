@@ -4,6 +4,8 @@ import org.idubinov.termfind.models.Entry;
 import org.idubinov.termfind.models.Term;
 import org.idubinov.termfind.service.EntryService;
 import org.idubinov.termfind.service.SearchService;
+import org.idubinov.termfind.util.PdfPageRenderer;
+import java.io.File;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
@@ -12,6 +14,7 @@ import org.springframework.stereotype.Component;
 import org.telegram.telegrambots.bots.TelegramLongPollingBot;
 import org.telegram.telegrambots.meta.api.methods.AnswerCallbackQuery;
 import org.telegram.telegrambots.meta.api.methods.send.SendDocument;
+import org.telegram.telegrambots.meta.api.methods.send.SendPhoto;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
 import org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageReplyMarkup;
 import org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageText;
@@ -19,7 +22,6 @@ import org.telegram.telegrambots.meta.api.objects.CallbackQuery;
 import org.telegram.telegrambots.meta.api.objects.InputFile;
 import org.telegram.telegrambots.meta.api.objects.Message;
 import org.telegram.telegrambots.meta.api.objects.Update;
-import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup;
 import org.telegram.telegrambots.meta.api.methods.ParseMode;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup;
 import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
@@ -102,10 +104,8 @@ public class TermFindBot extends TelegramLongPollingBot {
         // кнопки модерации — по всем вхождениям (админ видит и то, что фильтр отбросил)
         List<Entry> presentable = entryService.presentable(term);
 
-        InlineKeyboardMarkup keyboard = finalized
-                ? null
-                : BotMessageFormatter.buildModerationKeyboard(entries, chatId, config.adminId(),
-                        termEntity.map(Term::getId).orElse(null));
+        InlineKeyboardMarkup keyboard = BotMessageFormatter.buildModerationKeyboard(entries, chatId,
+                config.adminId(), finalized ? null : termEntity.map(Term::getId).orElse(null));
         SendMessage header = SendMessage.builder()
                 .chatId(chatId)
                 .text(BotMessageFormatter.buildCard(term, presentable, finalized))
@@ -152,12 +152,19 @@ public class TermFindBot extends TelegramLongPollingBot {
     }
 
     private void handleCallback(CallbackQuery callbackQuery) {
+        String data = callbackQuery.getData();
+        if (data == null) return;
+
+        if (data.startsWith("page:")) {
+            // просмотр страницы учебника доступен всем
+            long entryId = Long.parseLong(data.substring("page:".length()));
+            handleViewPage(callbackQuery, entryId);
+            return;
+        }
+
         if (callbackQuery.getFrom().getId() != config.adminId()) {
             return; // модерировать может только админ
         }
-
-        String data = callbackQuery.getData();
-        if (data == null) return;
 
         if (data.startsWith("approve:")) {
             long entryId = Long.parseLong(data.substring("approve:".length()));
@@ -179,6 +186,29 @@ public class TermFindBot extends TelegramLongPollingBot {
                         "🔒 Термин финализирован: неподтвержденные вхождения удалены, " +
                                 "остались только ✅. Аппрувы больше недоступны.");
             }
+        }
+    }
+
+    /** Рендерит страницу учебника и шлет фото. */
+    private void handleViewPage(CallbackQuery callbackQuery, long entryId) {
+        Optional<Entry> entryOpt = entryService.findEntryWithBook(entryId);
+        if (entryOpt.isEmpty()) {
+            answerCallback(callbackQuery.getId(), "Вхождение не найдено");
+            return;
+        }
+        Entry entry = entryOpt.get();
+        try {
+            byte[] png = new PdfPageRenderer().renderPage(new File(entry.getBook().getPdfPath()),
+                    entry.getPageNumber());
+            execute(SendPhoto.builder()
+                    .chatId(callbackQuery.getMessage().getChatId())
+                    .photo(new InputFile(new java.io.ByteArrayInputStream(png), "page_" + entry.getPageNumber() + ".png"))
+                    .caption("📖 " + entry.getBook().getTitle() + ", стр. " + entry.getPageNumber())
+                    .build());
+            answerCallback(callbackQuery.getId(), null);
+        } catch (Exception e) {
+            log.error("Не удалось отрисовать страницу", e);
+            answerCallback(callbackQuery.getId(), "Не удалось отрисовать страницу");
         }
     }
 
