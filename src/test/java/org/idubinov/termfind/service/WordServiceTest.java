@@ -126,6 +126,44 @@ class WordServiceTest {
     }
 
     @Test
+    void cyrillicInsideFormulasBecomesTextNotMath() throws Exception {
+        // регрессия: LLM сунул русский текст в $...$ — math-режим съедает пробелы
+        // («даётполнуюгруппу»), печатаем как обычный текст без рендера
+        byte[] docx = service.exportStrict("инверсия",
+                "Инверсия — преобразование, при котором $зеркальное отражение$ меняет направление.",
+                List.of(entry(Entry.EntryType.DEFINITION, 1, "Инверсия — преобразование симметрии.")));
+
+        try (XWPFDocument doc = new XWPFDocument(new ByteArrayInputStream(docx))) {
+            String text = doc.getParagraphs().stream().map(p -> p.getText()).reduce("", (a, b) -> a + "\n" + b);
+            assertTrue(text.contains("зеркальное отражение"), "кириллица из $..$ как текст, с пробелами");
+            int images = countPictures(doc);
+            assertEquals(0, images, "русский текст не рендерится как формула");
+        }
+    }
+
+    @Test
+    void bareLatexLinesAreRenderedAsFormulas() throws Exception {
+        // регрессия: LLM пишет формулы на отдельных строках БЕЗ $...$
+        byte[] docx = service.exportStrict("инверсия",
+                "Точечные группы:\nO^{+}(3)\nT_h = T \\otimes C_i\nи далее обычный текст.",
+                List.of(entry(Entry.EntryType.MENTION, 2, "упоминание")));
+
+        try (XWPFDocument doc = new XWPFDocument(new ByteArrayInputStream(docx))) {
+            String text = doc.getParagraphs().stream().map(p -> p.getText()).reduce("", (a, b) -> a + "\n" + b);
+            assertFalse(text.contains("\\otimes"), "LaTeX-команда не остаётся литералом");
+            assertTrue(text.contains("и далее обычный текст"));
+            assertEquals(2, countPictures(doc), "обе голые строки отрендерены формулами");
+        }
+    }
+
+    private static int countPictures(XWPFDocument doc) {
+        return (int) doc.getParagraphs().stream()
+                .flatMap(p -> p.getRuns().stream())
+                .flatMap(r -> r.getEmbeddedPictures().stream())
+                .count();
+    }
+
+    @Test
     void mentionsOnlyStillProducesDocx() throws Exception {
         byte[] docx = service.export("чушь",
                 List.of(entry(Entry.EntryType.MENTION, 2, "просто упоминание")),

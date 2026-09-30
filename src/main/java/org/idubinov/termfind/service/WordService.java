@@ -157,8 +157,10 @@ public class WordService {
     }
 
     /**
-     * 🔬 Строгое определение отдельным документом: текстовые сегменты параграфами,
-     * $формулы$ — картинками (JLaTeXMath); не отрендерившаяся формула — моноширинным текстом.
+     * 🔬 Строгое определение отдельным документом.
+     * Сегменты $...$ рендерятся как формулы (натуральный размер); кириллица внутри
+     * $...$ (LLM иногда суёт русский текст в формулы) трактуется как обычный текст;
+     * голые LaTeX-строки без $ тоже распознаются эвристикой.
      */
     public byte[] exportStrict(String term, String strictText, List<Entry> presentable) {
         try (XWPFDocument doc = new XWPFDocument();
@@ -169,15 +171,11 @@ public class WordService {
 
             for (LatexSegments.Segment segment : LatexSegments.parse(strictText)) {
                 if (segment.text() != null) {
-                    String text = segment.text().replaceAll("\\s+", " ").trim();
-                    if (!text.isBlank()) paragraph(doc, text);
-                } else {
-                    byte[] png = LatexRenderer.renderPng(segment.latex(), 18);
-                    if (png != null) {
-                        centeredImage(doc, png);
-                    } else {
-                        mono(doc, "$" + segment.latex() + "$");
+                    for (String line : segment.text().split("\\n+")) {
+                        appendStrictLine(doc, line);
                     }
+                } else {
+                    appendFormula(doc, segment.latex());
                 }
             }
 
@@ -189,6 +187,60 @@ public class WordService {
         } catch (Exception e) {
             throw new IllegalStateException("Не удалось собрать Word: " + e.getMessage(), e);
         }
+    }
+
+    private void appendStrictLine(XWPFDocument doc, String line) {
+        String trimmed = line.replaceAll("\\s+", " ").trim();
+        if (trimmed.isBlank()) return;
+        if (looksLikeLatexLine(trimmed)) {
+            appendFormula(doc, trimmed);
+        } else {
+            paragraph(doc, trimmed);
+        }
+    }
+
+    private void appendFormula(XWPFDocument doc, String latex) {
+        if (hasCyrillic(latex)) {
+            // LLM написал русский текст внутри $...$ — math-режим съедает пробелы,
+            // поэтому печатаем как обычный текст
+            paragraph(doc, latex.replace("\\text{", "").replace("}", "").trim());
+            return;
+        }
+        byte[] png = LatexRenderer.renderPng(latex, 20);
+        if (png == null) {
+            mono(doc, latex);
+            return;
+        }
+        try {
+            BufferedImage img = ImageIO.read(new ByteArrayInputStream(png));
+            int width = img.getWidth();   // натуральный размер: 1 px рендера ≈ 1 pt
+            int height = img.getHeight();
+            if (width > 420) {            // только downscale широченных формул
+                height = height * 420 / width;
+                width = 420;
+            }
+            XWPFParagraph p = doc.createParagraph();
+            p.setAlignment(org.apache.poi.xwpf.usermodel.ParagraphAlignment.CENTER);
+            p.createRun().addPicture(new ByteArrayInputStream(png), Document.PICTURE_TYPE_PNG,
+                    "formula.png", Units.toEMU(width), Units.toEMU(height));
+        } catch (Exception e) {
+            log.warn("Не удалось вставить формулу в Word: {}", e.getMessage());
+            mono(doc, latex);
+        }
+    }
+
+    private static boolean hasCyrillic(String s) {
+        return s != null && s.matches(".*[А-Яа-яЁё].*");
+    }
+
+    /**
+     * Голая строка-формула без $...$: нет кириллицы, есть LaTeX-приметы
+     * (команды \\, степени ^, индексы _, группы {}) и она короткая.
+     */
+    private static boolean looksLikeLatexLine(String line) {
+        if (hasCyrillic(line) || line.length() > 120) return false;
+        return line.contains("\\") || line.contains("^") || line.contains("_")
+                || line.matches(".*\\{[^}]*}.*");
     }
 
     private void centeredImage(XWPFDocument doc, byte[] png) throws Exception {
