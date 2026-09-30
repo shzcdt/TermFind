@@ -34,8 +34,8 @@ class FeedbackServiceTest {
         term = new Term("тензор", "тенз");
         when(termRepository.findById(1L)).thenReturn(Optional.of(term));
         when(feedbackRepository.findByUserTelegramIdAndTermId(anyLong(), eq(1L))).thenReturn(Optional.empty());
-        when(feedbackRepository.countByTermIdAndIsHelpful(eq(1L), eq(true))).thenReturn(1);
-        when(feedbackRepository.countByTermIdAndIsHelpful(eq(1L), eq(false))).thenReturn(0);
+        when(feedbackRepository.countByTermIdAndHelpful(eq(1L), eq(true))).thenReturn(1);
+        when(feedbackRepository.countByTermIdAndHelpful(eq(1L), eq(false))).thenReturn(0);
     }
 
     @Test
@@ -64,8 +64,8 @@ class FeedbackServiceTest {
     void oppositeVoteChanges() {
         when(feedbackRepository.findByUserTelegramIdAndTermId(42L, 1L))
                 .thenReturn(Optional.of(new Feedback(42L, term, true)));
-        when(feedbackRepository.countByTermIdAndIsHelpful(eq(1L), eq(false))).thenReturn(1);
-        when(feedbackRepository.countByTermIdAndIsHelpful(eq(1L), eq(true))).thenReturn(0);
+        when(feedbackRepository.countByTermIdAndHelpful(eq(1L), eq(false))).thenReturn(1);
+        when(feedbackRepository.countByTermIdAndHelpful(eq(1L), eq(true))).thenReturn(0);
 
         var result = service.vote(42L, 1L, false);
 
@@ -75,7 +75,7 @@ class FeedbackServiceTest {
 
     @Test
     void netThreeUpvotesVerifyTerm_once() {
-        when(feedbackRepository.countByTermIdAndIsHelpful(eq(1L), eq(true))).thenReturn(3);
+        when(feedbackRepository.countByTermIdAndHelpful(eq(1L), eq(true))).thenReturn(3);
 
         var first = service.vote(1L, 1L, true);
         assertTrue(first.justVerified());
@@ -88,8 +88,8 @@ class FeedbackServiceTest {
 
     @Test
     void netThreeDownvotesEscalate_once() {
-        when(feedbackRepository.countByTermIdAndIsHelpful(eq(1L), eq(false))).thenReturn(3);
-        when(feedbackRepository.countByTermIdAndIsHelpful(eq(1L), eq(true))).thenReturn(0);
+        when(feedbackRepository.countByTermIdAndHelpful(eq(1L), eq(false))).thenReturn(3);
+        when(feedbackRepository.countByTermIdAndHelpful(eq(1L), eq(true))).thenReturn(0);
 
         var first = service.vote(1L, 1L, false);
         assertTrue(first.justEscalated());

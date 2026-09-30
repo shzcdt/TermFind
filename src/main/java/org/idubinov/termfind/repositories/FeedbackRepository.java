@@ -11,5 +11,6 @@ public interface FeedbackRepository extends JpaRepository<Feedback, Long> {
 
     Optional<Feedback> findByUserTelegramIdAndTermId(long userTelegramId, Long termId);
 
-    int countByTermIdAndIsHelpful(Long termId, boolean helpful);
+    /** Имя метода — по ПОЛЮ сущности (helpful), не по колонке is_helpful. */
+    int countByTermIdAndHelpful(Long termId, boolean helpful);
 }

@@ -56,8 +56,8 @@ public class FeedbackService {
             action = "ADDED";
         }
 
-        int up = feedbackRepository.countByTermIdAndIsHelpful(termId, true);
-        int down = feedbackRepository.countByTermIdAndIsHelpful(termId, false);
+        int up = feedbackRepository.countByTermIdAndHelpful(termId, true);
+        int down = feedbackRepository.countByTermIdAndHelpful(termId, false);
         term.setUpvotes(up);
         term.setDownvotes(down);
 
