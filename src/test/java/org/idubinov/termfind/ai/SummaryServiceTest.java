@@ -3,7 +3,9 @@ package org.idubinov.termfind.ai;
 import org.idubinov.termfind.models.Book;
 import org.idubinov.termfind.models.Entry;
 import org.idubinov.termfind.models.Term;
+import org.idubinov.termfind.repositories.EntryRepository;
 import org.idubinov.termfind.repositories.TermRepository;
+import org.idubinov.termfind.service.CacheService;
 import org.idubinov.termfind.service.EntryService;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -56,7 +58,8 @@ class SummaryServiceTest {
         when(entryService.presentable("тензор"))
                 .thenReturn(List.of(entry(Entry.EntryType.DEFINITION, 14, "тензором называется величина")));
 
-        SummaryService service = new SummaryService(fake, entryService, termRepo);
+        SummaryService service = new SummaryService(fake, entryService, termRepo,
+                Mockito.mock(EntryRepository.class), Mockito.mock(CacheService.class));
 
         var first = service.explain("тензор");
         var second = service.explain("тензор");
@@ -71,7 +74,8 @@ class SummaryServiceTest {
     void disabledWithoutApiKey() {
         LlmClient fake = new FakeLlmClient(false, (s, u) -> "не должно вызываться");
         SummaryService service = new SummaryService(fake,
-                Mockito.mock(EntryService.class), Mockito.mock(TermRepository.class));
+                Mockito.mock(EntryService.class), Mockito.mock(TermRepository.class),
+                Mockito.mock(EntryRepository.class), Mockito.mock(CacheService.class));
         assertFalse(service.isEnabled());
         assertTrue(service.explain("тензор").isEmpty());
     }
@@ -84,7 +88,8 @@ class SummaryServiceTest {
         when(entryService.findTermByQuery("чушь")).thenReturn(Optional.of(term));
         when(entryService.presentable("чушь")).thenReturn(List.of());
 
-        SummaryService service = new SummaryService(fake, entryService, Mockito.mock(TermRepository.class));
+        SummaryService service = new SummaryService(fake, entryService, Mockito.mock(TermRepository.class),
+                Mockito.mock(EntryRepository.class), Mockito.mock(CacheService.class));
         assertTrue(service.explain("чушь").isEmpty());
         assertEquals(0, ((FakeLlmClient) fake).calls);
     }

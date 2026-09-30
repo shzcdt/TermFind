@@ -34,6 +34,14 @@ public class Entry {
     @Column(nullable = false)
     private boolean approved;
 
+    /** Уточнение от LLM-классификатора (Фаза C): DEFINITION | USAGE | NOISE. */
+    @Column(name = "llm_type", length = 16)
+    private String llmType;
+
+    /** Уверенность LLM-классификатора 0..10. */
+    @Column(name = "llm_score")
+    private Double llmScore;
+
     public Entry() {
     }
 
@@ -53,6 +61,8 @@ public class Entry {
     public String getText() { return text; }
     public EntryType getType() { return type; }
     public boolean isApproved() { return approved; }
+    public String getLlmType() { return llmType; }
+    public Double getLlmScore() { return llmScore; }
 
     public void setId(Long id) {
         this.id = id;
@@ -80,5 +90,13 @@ public class Entry {
 
     public void setApproved(boolean approved) {
         this.approved = approved;
+    }
+
+    public void setLlmType(String llmType) {
+        this.llmType = llmType;
+    }
+
+    public void setLlmScore(Double llmScore) {
+        this.llmScore = llmScore;
     }
 }

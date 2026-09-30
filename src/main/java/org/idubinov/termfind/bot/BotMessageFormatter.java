@@ -90,6 +90,15 @@ public final class BotMessageFormatter {
      * страницы упоминаний. Экранирование HTML — обязанность вызывающего текста, здесь экранируем сами.
      */
     public static String buildCard(String term, List<Entry> entries, boolean termFinalized) {
+        return buildCard(term, entries, termFinalized, null, List.of());
+    }
+
+    /**
+     * Расширенная карточка: + нейро-определение (кэш terms.summary) и
+     + разделы использования из оглавлений книг (вместо сырого списка страниц).
+     */
+    public static String buildCard(String term, List<Entry> entries, boolean termFinalized,
+                                   String summary, List<String> usageLines) {
         if (entries == null || entries.isEmpty()) {
             return "❌ По запросу «" + esc(term) + "» ничего не найдено.";
         }
@@ -116,6 +125,11 @@ public final class BotMessageFormatter {
                     .append(esc(snippet(best.getText(), 600))).append('\n');
         }
 
+        if (summary != null && !summary.isBlank()) {
+            sb.append("\n🧠 <b>НЕЙРО-ОПРЕДЕЛЕНИЕ</b>\n")
+                    .append(esc(snippet(summary, 700))).append('\n');
+        }
+
         if (definitions.size() > 1) {
             sb.append("\n📌 <b>ТАК ЖЕ ГОВОРЯТСЯ</b>\n");
             definitions.stream().skip(1).limit(2).forEach(e ->
@@ -124,8 +138,11 @@ public final class BotMessageFormatter {
                             .append(", стр. ").append(e.getPageNumber()).append("</i>\n"));
         }
 
-        // 📚 Где встречается
-        if (!mentions.isEmpty()) {
+        // Разделы из оглавлений книг, если есть; иначе сырой список страниц
+        if (usageLines != null && !usageLines.isEmpty()) {
+            sb.append("\n🔍 <b>ГДЕ ИСПОЛЬЗОВАТЬ</b>\n");
+            usageLines.forEach(line -> sb.append(esc(line)).append('\n'));
+        } else if (!mentions.isEmpty()) {
             List<Integer> pages = mentions.stream().map(Entry::getPageNumber).distinct().toList();
             sb.append("\n📚 <b>ВСТРЕЧАЕТСЯ</b>: ");
             pages.stream().limit(12).forEach(p -> sb.append(p).append(", "));

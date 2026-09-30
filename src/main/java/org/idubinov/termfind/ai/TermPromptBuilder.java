@@ -20,6 +20,29 @@ public final class TermPromptBuilder {
             3. Ссылайся на источники в формате (Автор, стр. N) — бери их из меток фрагментов.
             4. Отвечай по-русски, кратко и по делу, 150-250 слов.""";
 
+    public static final String SIMPLER_PROMPT = """
+            Ты — терпеливый преподаватель, объясняющий материал первокурснику.
+            Тебе дают термин и фрагменты из учебников. Правила:
+            1. Используй ТОЛЬКО предоставленные фрагменты. Ничего не выдумывай.
+            2. Объясни термин ПРОЩЕ: без формул, с бытовой аналогией или картинкой в словах.
+            3. Отвечай по-русски, 100-150 слов, дружелюбно и без канцелярита.""";
+
+    public static final String STRICTER_PROMPT = """
+            Ты — научный руководитель. Тебе дают термин и фрагменты из учебников. Правила:
+            1. Используй ТОЛЬКО предоставленные фрагменты. Ничего не выдумывай.
+            2. Дай ФОРМАЛЬНОЕ определение термина: строгие формулировки, формулы и обозначения, \
+            где они вводятся.
+            3. Ссылайся на источники в формате (Автор, стр. N). Отвечай по-русски, 150-250 слов.""";
+
+    public static final String CLASSIFY_PROMPT = """
+            Тебе дают термин и пронумерованные вхождения из учебников.
+            Для каждого вхождения определи тип:
+            - DEFINITION — содержит определение этого термина;
+            - USAGE — осмысленное использование термина, но не определение;
+            - NOISE — обрывок текста, мусор, или термин тут ни при чём.
+            Ответь СТРОГО JSON-массивом без пояснений:
+            [{"i": <номер вхождения>, "type": "DEFINITION|USAGE|NOISE", "score": <уверенность 0-10>}]""";
+
     private static final int MAX_DEFINITIONS = 5;
     private static final int MAX_MENTIONS = 15;
     private static final int SNIPPET = 400;
@@ -50,8 +73,24 @@ public final class TermPromptBuilder {
         return sb.toString();
     }
 
+    /** Пронумерованные вхождения для LLM-классификации (номер = позиция с 1). */
+    public static String buildNumbered(String term, List<Entry> entries) {
+        StringBuilder sb = new StringBuilder("Термин: ").append(term).append("\n\n");
+        for (int i = 0; i < entries.size(); i++) {
+            Entry e = entries.get(i);
+            sb.append('[').append(i + 1).append("] (")
+                    .append(e.getBook().getTitle()).append(", стр. ").append(e.getPageNumber())
+                    .append(") ").append(snippet(e.getText(), 300)).append('\n');
+        }
+        return sb.toString();
+    }
+
     private static String snippet(String text) {
+        return snippet(text, 400);
+    }
+
+    private static String snippet(String text, int max) {
         String clean = text.replaceAll("\\s+", " ").trim();
-        return clean.length() <= SNIPPET ? clean : clean.substring(0, SNIPPET) + "…";
+        return clean.length() <= max ? clean : clean.substring(0, max) + "…";
     }
 }

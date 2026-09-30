@@ -181,6 +181,11 @@ public class BookService {
         }
         bookRepository.save(book);
 
+        // новая книга могла добавить определения известных терминов — их LLM-кэш устарел
+        for (Term stale : termRepository.findTermsWithEntriesInBook(bookId)) {
+            stale.setSummary(null);
+        }
+
         log.info("Извлечена книга «{}»: {} страниц, {} определений", book.getTitle(), pages.size(), definitions);
         return new ExtractionStats(pages.size(), definitions, book.getToc() != null);
     }

@@ -11,6 +11,7 @@ import org.idubinov.termfind.service.SubjectService;
 import org.idubinov.termfind.service.UserService;
 import org.idubinov.termfind.util.PdfPageRenderer;
 import org.idubinov.termfind.util.TermNormalizer;
+import org.idubinov.termfind.util.TocMapper;
 import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -78,6 +79,8 @@ public class TermFindBot extends TelegramLongPollingBot {
     private final Map<Long, Long> uploadSubjectPick = new ConcurrentHashMap<>();
     /** normalizedTerm -> true, пока идёт индексация (дедуп параллельных запросов). */
     private final Map<String, Boolean> inFlightSearch = new ConcurrentHashMap<>();
+    /** termId -> true, пока идут LLM-экстры (классификация + синтез). */
+    private final Map<Long, Boolean> synthesisInFlight = new ConcurrentHashMap<>();
 
     public TermFindBot(BotConfig config, SearchService searchService, EntryService entryService,
                        SummaryService summaryService, UserService userService, SubjectService subjectService,
@@ -208,17 +211,19 @@ public class TermFindBot extends TelegramLongPollingBot {
         boolean isAdmin = viewerId == config.adminId();
         Optional<Term> termEntity = entryService.findTermByQuery(term);
         boolean finalized = termEntity.map(Term::isFinalized).orElse(false);
+        Long termId = termEntity.map(Term::getId).orElse(null);
+        String summary = termEntity.map(Term::getSummary).orElse(null);
 
         // Показываем пользователю только отфильтрованное и отсортированное;
         // кнопки модерации — по всем вхождениям (админ видит и то, что фильтр отбросил)
         List<Entry> presentable = entryService.presentable(term);
 
         InlineKeyboardMarkup keyboard = BotMessageFormatter.buildModerationKeyboard(entries, viewerId,
-                config.adminId(), finalized ? null : termEntity.map(Term::getId).orElse(null));
-        keyboard = withExplainButton(keyboard, termEntity.map(Term::getId).orElse(null));
+                config.adminId(), finalized ? null : termId);
+        keyboard = withExplainButton(keyboard, finalized ? null : termId);
         SendMessage header = SendMessage.builder()
                 .chatId(chatId)
-                .text(BotMessageFormatter.buildCard(term, presentable, finalized))
+                .text(BotMessageFormatter.buildCard(term, presentable, finalized, summary, buildUsageLines(presentable)))
                 .parseMode(ParseMode.HTML)
                 .build();
         if (keyboard != null) {
@@ -231,6 +236,57 @@ public class TermFindBot extends TelegramLongPollingBot {
             sendDocument(chatId, ReportExporter.fileName(term),
                     ReportExporter.export(term, presentable, entries.size() - presentable.size()));
         }
+
+        if (!finalized) {
+            scheduleAiExtras(term, termId, chatId);
+        }
+    }
+
+    /** Разделы использования из оглавлений книг: «• Зонная теория — со стр. 45». */
+    private List<String> buildUsageLines(List<Entry> entries) {
+        Map<Long, List<TocMapper.TocSection>> tocByBook = new java.util.HashMap<>();
+        Map<String, Integer> ordered = new java.util.LinkedHashMap<>();
+        for (Entry entry : entries) {
+            String toc = entry.getBook().getToc();
+            if (toc == null) continue;
+            List<TocMapper.TocSection> sections =
+                    tocByBook.computeIfAbsent(entry.getBook().getId(), id -> TocMapper.flatten(toc));
+            String section = TocMapper.sectionFor(sections, entry.getPageNumber());
+            if (section != null) {
+                ordered.putIfAbsent(section, entry.getPageNumber());
+            }
+        }
+        return ordered.entrySet().stream()
+                .limit(5)
+                .map(e -> "• " + e.getKey() + " — со стр. " + e.getValue())
+                .toList();
+    }
+
+    /** Фоновые LLM-экстры после индексации: классификация вхождений + синтез определения. */
+    private void scheduleAiExtras(String term, Long termId, long chatId) {
+        if (!summaryService.isEnabled() || termId == null) return;
+        if (synthesisInFlight.putIfAbsent(termId, true) != null) return;
+        aiExecutor.submit(() -> {
+            try {
+                summaryService.classifyTerm(term);
+                entryService.findTermByQuery(term).ifPresent(t -> {
+                    if (t.getSummary() == null || t.getSummary().isBlank()) {
+                        summaryService.explain(term).ifPresent(explanation -> {
+                            String text = BotMessageFormatter.esc("🧠 Нейро-определение «" + term + "»:\n"
+                                    + explanation.text() + "\n\n📚 Источники: " + explanation.sources());
+                            executeSilently(SendMessage.builder().chatId(chatId)
+                                    .text(text)
+                                    .parseMode(ParseMode.HTML)
+                                    .build());
+                        });
+                    }
+                });
+            } catch (Exception e) {
+                log.warn("LLM-экстры для «{}» не удались: {}", term, e.getMessage());
+            } finally {
+                synthesisInFlight.remove(termId);
+            }
+        });
     }
 
     /** PDF-файл в диалоге /upload: скачивание, заявка, уведомление админа. */
@@ -324,6 +380,11 @@ public class TermFindBot extends TelegramLongPollingBot {
                 uploadSubjectPick.put(callbackQuery.getMessage().getChatId(), subjectId);
             }
             answerCallback(callbackQuery.getId(), "Теперь отправь файл PDF (до 20 МБ)");
+            return;
+        }
+
+        if (data.startsWith("simpler:") || data.startsWith("stricter:")) {
+            handleVariant(callbackQuery, data);
             return;
         }
 
@@ -449,11 +510,42 @@ public class TermFindBot extends TelegramLongPollingBot {
         if (!summaryService.isEnabled() || termId == null) return keyboard;
         List<List<org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton>> rows =
                 new java.util.ArrayList<>(keyboard != null ? keyboard.getKeyboard() : List.of());
-        rows.add(0, List.of(org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton.builder()
-                .text("🧠 Объяснить")
-                .callbackData("explain:" + termId)
-                .build()));
+        rows.add(0, List.of(
+                org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton.builder()
+                        .text("🧠 Объяснить").callbackData("explain:" + termId).build(),
+                org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton.builder()
+                        .text("💡 Проще").callbackData("simpler:" + termId).build(),
+                org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton.builder()
+                        .text("🔬 Строже").callbackData("stricter:" + termId).build()));
         return new InlineKeyboardMarkup(rows);
+    }
+
+    /** 💡 Проще / 🔬 Строже: LLM-вариант объяснения (кэшируется в llm_cache). */
+    private void handleVariant(CallbackQuery callbackQuery, String data) {
+        boolean stricter = data.startsWith("stricter:");
+        long termId = Long.parseLong(data.substring((stricter ? "stricter:" : "simpler:").length()));
+        long chatId = callbackQuery.getMessage() != null ? callbackQuery.getMessage().getChatId() : 0;
+        entryService.findTermById(termId).ifPresentOrElse(term -> {
+            answerCallback(callbackQuery.getId(), stricter ? "🔬 Формулирую строго… до 20 сек" : "💡 Упрощаю… до 20 сек");
+            aiExecutor.submit(() -> {
+                try {
+                    var variant = summaryService.variant(term.getDisplayForm(), stricter);
+                    if (variant.isEmpty()) {
+                        executeSilently(SendMessage.builder().chatId(chatId)
+                                .text("❌ Недостаточно данных для «" + term.getDisplayForm() + "»").build());
+                        return;
+                    }
+                    String text = (stricter ? "🔬 " : "💡 ") + variant.get().text()
+                            + "\n\n📚 Источники: " + variant.get().sources();
+                    executeSilently(SendMessage.builder().chatId(chatId)
+                            .text(BotMessageFormatter.esc(text)).parseMode(ParseMode.HTML).build());
+                } catch (Exception e) {
+                    log.error("Ошибка генерации варианта", e);
+                    executeSilently(SendMessage.builder().chatId(chatId)
+                            .text("⚠️ Нейросеть недоступна, попробуй позже").build());
+                }
+            });
+        }, () -> answerCallback(callbackQuery.getId(), "Термин не найден"));
     }
 
     /** Рендерит страницу учебника и шлет фото. */
