@@ -1,6 +1,7 @@
 package org.idubinov.termfind.bot;
 
 import org.idubinov.termfind.models.Entry;
+import org.idubinov.termfind.service.SubjectService;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton;
 
@@ -9,12 +10,53 @@ import java.util.List;
 /**
  * Короткое сообщение-шапка (тизер) и клавиатура модерации.
  * Полные тексты уезжают в файл (см. ReportExporter), в чате — только обзор.
+ * Здесь же — тексты команд /start, /help и /subjects.
  */
 public final class BotMessageFormatter {
 
     static final int MAX_MESSAGE_LENGTH = 3800; // запас до 4096
 
     private BotMessageFormatter() {
+    }
+
+    /** Приветствие для /start и /help. */
+    public static String buildWelcome() {
+        return """
+                👋 Привет! Я TermFind — ищу термины в учебниках.
+
+                Пришли термин (например, «квазиимпульс») — найду определения и \
+                упоминания в книгах, покажу страницы и пришлю полный отчёт файлом.
+
+                Кнопки под ответом:
+                🖼 — показать страницу книги, 🧠 — объяснение от нейросети.
+
+                Команды:
+                /subjects — предметы и книги
+                /help — эта справка""";
+    }
+
+    /** Список предметов с числом книг — для /subjects. */
+    public static String buildSubjects(List<SubjectService.SubjectView> subjects) {
+        if (subjects == null || subjects.isEmpty()) {
+            return "Предметов пока нет.";
+        }
+        StringBuilder sb = new StringBuilder("📚 Предметы и книги:\n");
+        for (SubjectService.SubjectView s : subjects) {
+            sb.append("• ").append(esc(s.name()));
+            if (s.description() != null && !s.description().isBlank()) {
+                sb.append(" — ").append(esc(s.description()));
+            }
+            sb.append(" — ").append(s.bookCount()).append(' ').append(bookWord(s.bookCount())).append('\n');
+        }
+        return sb.toString().stripTrailing();
+    }
+
+    /** Русская плюрализация: 1 книга, 2 книги, 5 книг. */
+    private static String bookWord(long n) {
+        long mod10 = n % 10, mod100 = n % 100;
+        if (mod10 == 1 && mod100 != 11) return "книга";
+        if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return "книги";
+        return "книг";
     }
 
     /**
@@ -40,7 +82,6 @@ public final class BotMessageFormatter {
                 .append(" (определений: ").append(definitions.size())
                 .append(", упоминаний: ").append(mentions.size()).append(")\n");
 
-        // 🎯 Лучшее определение (approved уже отсортированы первыми)
         if (!definitions.isEmpty()) {
             Entry best = definitions.get(0);
             sb.append("\n🎯 <b>ОПРЕДЕЛЕНИЕ</b>\n")
@@ -49,7 +90,6 @@ public final class BotMessageFormatter {
                     .append(esc(snippet(best.getText(), 600))).append('\n');
         }
 
-        // 📌 Альтернативные формулировки — следующие по скору
         if (definitions.size() > 1) {
             sb.append("\n📌 <b>ТАК ЖЕ ГОВОРЯТСЯ</b>\n");
             definitions.stream().skip(1).limit(2).forEach(e ->

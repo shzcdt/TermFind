@@ -2,8 +2,11 @@ package org.idubinov.termfind.bot;
 
 import org.idubinov.termfind.models.Entry;
 import org.idubinov.termfind.models.Term;
+import org.idubinov.termfind.ai.SummaryService;
 import org.idubinov.termfind.service.EntryService;
 import org.idubinov.termfind.service.SearchService;
+import org.idubinov.termfind.service.SubjectService;
+import org.idubinov.termfind.service.UserService;
 import org.idubinov.termfind.util.PdfPageRenderer;
 import java.io.File;
 import org.slf4j.Logger;
@@ -29,27 +32,40 @@ import org.telegram.telegrambots.updatesreceivers.DefaultBotSession;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * Telegram-бот: пользователь шлет термин — бот возвращает определения и упоминания
  * (отдельными сообщениями, полными текстами). Для админа — кнопки ✅ на каждое
  * вхождение и 🔒 финализация термина. Long polling стартует по ApplicationReadyEvent.
+ * Команды: /start, /help, /subjects; любой текст без «/» считается поисковым запросом.
  */
 @Component
 public class TermFindBot extends TelegramLongPollingBot {
 
     private static final Logger log = LoggerFactory.getLogger(TermFindBot.class);
 
+    private static final String UNKNOWN_COMMAND =
+            "Не знаю такой команды. Просто пришли термин текстом или /help.";
+
     private final BotConfig config;
     private final SearchService searchService;
     private final EntryService entryService;
+    private final SummaryService summaryService;
+    private final UserService userService;
+    private final SubjectService subjectService;
+    /** LLM отвечает 5-20 сек — обрабатываем кнопку вне потока polling. */
+    private final ExecutorService aiExecutor = Executors.newFixedThreadPool(2);
 
-    public TermFindBot(BotConfig config, SearchService searchService, EntryService entryService) {
+    public TermFindBot(BotConfig config, SearchService searchService, EntryService entryService,
+                       SummaryService summaryService, UserService userService, SubjectService subjectService) {
         this.config = config;
         this.searchService = searchService;
         this.entryService = entryService;
-        // ВНИМАНИЕ: не регистрируем бота в конструкторе — long polling начнет обрабатывать
-        // апдейты до готовности Spring-контекста (IllegalStateException).
+        this.summaryService = summaryService;
+        this.userService = userService;
+        this.subjectService = subjectService;
     }
 
     /** Регистрация long polling — только когда контекст полностью готов. */
@@ -81,13 +97,43 @@ public class TermFindBot extends TelegramLongPollingBot {
     public void onUpdateReceived(Update update) {
         try {
             if (update.hasMessage() && update.getMessage().hasText()) {
-                handleSearch(update.getMessage());
+                Message message = update.getMessage();
+                if (message.getFrom() != null) {
+                    userService.getOrCreate(message.getFrom().getId());
+                }
+                String text = message.getText().trim();
+                if (text.startsWith("/")) {
+                    handleCommand(text, message.getChatId());
+                } else {
+                    handleSearch(message);
+                }
             } else if (update.hasCallbackQuery()) {
                 handleCallback(update.getCallbackQuery());
             }
         } catch (Exception e) {
-            // ошибка одного апдейта не должна ронять поток polling
             log.error("Ошибка обработки апдейта от Telegram", e);
+        }
+    }
+
+    private void handleCommand(String text, long chatId) {
+        // в группах команда приходит с суффиксом: /help@TermSearchBot
+        String command = text.split("\\s+")[0].toLowerCase();
+        int at = command.indexOf('@');
+        if (at > 0) command = command.substring(0, at);
+
+        switch (command) {
+            case "/start", "/help" -> executeSilently(SendMessage.builder()
+                    .chatId(chatId)
+                    .text(BotMessageFormatter.buildWelcome())
+                    .build());
+            case "/subjects" -> executeSilently(SendMessage.builder()
+                    .chatId(chatId)
+                    .text(BotMessageFormatter.buildSubjects(subjectService.listWithBookCounts()))
+                    .build());
+            default -> executeSilently(SendMessage.builder()
+                    .chatId(chatId)
+                    .text(UNKNOWN_COMMAND)
+                    .build());
         }
     }
 
@@ -106,6 +152,7 @@ public class TermFindBot extends TelegramLongPollingBot {
 
         InlineKeyboardMarkup keyboard = BotMessageFormatter.buildModerationKeyboard(entries, chatId,
                 config.adminId(), finalized ? null : termEntity.map(Term::getId).orElse(null));
+        keyboard = withExplainButton(keyboard, termEntity.map(Term::getId).orElse(null));
         SendMessage header = SendMessage.builder()
                 .chatId(chatId)
                 .text(BotMessageFormatter.buildCard(term, presentable, finalized))
@@ -155,6 +202,12 @@ public class TermFindBot extends TelegramLongPollingBot {
         String data = callbackQuery.getData();
         if (data == null) return;
 
+        if (data.startsWith("explain:")) {
+            long termId = Long.parseLong(data.substring("explain:".length()));
+            handleExplain(callbackQuery, termId);
+            return;
+        }
+
         if (data.startsWith("page:")) {
             // просмотр страницы учебника доступен всем
             long entryId = Long.parseLong(data.substring("page:".length()));
@@ -179,6 +232,7 @@ public class TermFindBot extends TelegramLongPollingBot {
         } else if (data.startsWith("finalize:")) {
             long termId = Long.parseLong(data.substring("finalize:".length()));
             boolean finalized = entryService.finalizeTerm(termId);
+            if (finalized) summaryService.invalidateCache(termId);
             answerCallback(callbackQuery.getId(), finalized ? "🔒 Термин финализирован" : "Не найдено");
             if (finalized && callbackQuery.getMessage() != null) {
                 editMessage(callbackQuery.getMessage().getMessageId(),
@@ -187,6 +241,44 @@ public class TermFindBot extends TelegramLongPollingBot {
                                 "остались только ✅. Аппрувы больше недоступны.");
             }
         }
+    }
+
+    /** Нейро-объяснение: генерация в отдельном потоке, ответ новым сообщением. */
+    private void handleExplain(CallbackQuery callbackQuery, long termId) {
+        long chatId = callbackQuery.getMessage().getChatId();
+        entryService.findTermById(termId).ifPresentOrElse(term -> {
+            String termName = term.getDisplayForm();
+            answerCallback(callbackQuery.getId(), "🧠 Думаю… это займет до 20 секунд");
+            aiExecutor.submit(() -> {
+                try {
+                    var explanation = summaryService.explain(termName);
+                    if (explanation.isEmpty()) {
+                        executeSilently(SendMessage.builder().chatId(chatId)
+                                .text("❌ Недостаточно данных для объяснения «" + termName + "»").build());
+                        return;
+                    }
+                    String text = "🧠 " + explanation.get().text()
+                            + "\n\n📚 Источники: " + explanation.get().sources();
+                    executeSilently(SendMessage.builder().chatId(chatId)
+                            .text(BotMessageFormatter.esc(text)).parseMode(ParseMode.HTML).build());
+                } catch (Exception e) {
+                    log.error("Ошибка генерации объяснения", e);
+                    executeSilently(SendMessage.builder().chatId(chatId)
+                            .text("⚠️ Нейросеть недоступна, попробуй позже").build());
+                }
+            });
+        }, () -> answerCallback(callbackQuery.getId(), "Термин не найден"));
+    }
+
+    private InlineKeyboardMarkup withExplainButton(InlineKeyboardMarkup keyboard, Long termId) {
+        if (!summaryService.isEnabled() || termId == null) return keyboard;
+        List<List<org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton>> rows =
+                new java.util.ArrayList<>(keyboard != null ? keyboard.getKeyboard() : List.of());
+        rows.add(0, List.of(org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton.builder()
+                .text("🧠 Объяснить")
+                .callbackData("explain:" + termId)
+                .build()));
+        return new InlineKeyboardMarkup(rows);
     }
 
     /** Рендерит страницу учебника и шлет фото. */

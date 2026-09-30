@@ -21,7 +21,6 @@ dependencies {
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 
-    implementation("org.apache.lucene:lucene-core:9.12.3")
     implementation("org.apache.pdfbox:pdfbox:3.0.8")
     implementation("com.github.rholder:snowball-stemmer:1.3.0.581.1")
 
@@ -31,9 +30,9 @@ dependencies {
 
     implementation("org.postgresql:postgresql:42.7.13")
 
-    // Telegram Bot API (long polling), без spring-стартера — Boot 4 несовместим с ним
     implementation("org.telegram:telegrambots:6.9.0")
 
+    testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation("com.h2database:h2")
 }
 

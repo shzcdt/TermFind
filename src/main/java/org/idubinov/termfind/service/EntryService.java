@@ -96,6 +96,10 @@ public class EntryService {
         return entryRepository.findWithBookById(id);
     }
 
+    public Optional<Term> findTermById(Long id) {
+        return termRepository.findById(id);
+    }
+
     public Optional<Term> findTermByQuery(String query) {
         return termRepository.findByNormalizedForm(TermNormalizer.normalize(query));
     }

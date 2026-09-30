@@ -6,6 +6,11 @@ build/
 .kotlin
 src/main/resources/database.properties
 
+### Секреты и артефакты рантайма ###
+.env
+uploads/
+images/
+
 ### IntelliJ IDEA ###
 .idea/modules.xml
 .idea/jarRepositories.xml

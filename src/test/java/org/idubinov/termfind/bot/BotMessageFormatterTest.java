@@ -3,6 +3,7 @@ package org.idubinov.termfind.bot;
 import org.idubinov.termfind.models.Book;
 import org.idubinov.termfind.models.Entry;
 import org.idubinov.termfind.models.Term;
+import org.idubinov.termfind.service.SubjectService;
 import org.junit.jupiter.api.Test;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup;
 
@@ -160,5 +161,32 @@ class BotMessageFormatterTest {
         assertTrue(header.contains("ТАК ЖЕ ГОВОРЯТСЯ"));
         assertTrue(header.contains("стр. 30"));
         assertTrue(header.contains("ВСТРЕЧАЕТСЯ"));
+    }
+
+    // ---------- команды ----------
+
+    @Test
+    void welcomeExplainsUsageAndCommands() {
+        String welcome = BotMessageFormatter.buildWelcome();
+        assertTrue(welcome.contains("/subjects"));
+        assertTrue(welcome.contains("/help"));
+        assertTrue(welcome.contains("термин"));
+    }
+
+    @Test
+    void subjectsListWithPluralizedBookCounts() {
+        String text = BotMessageFormatter.buildSubjects(List.of(
+                new SubjectService.SubjectView("Оптика", null, 1),
+                new SubjectService.SubjectView("Механика", "общий курс", 3),
+                new SubjectService.SubjectView("Квантовая механика", null, 5)));
+
+        assertTrue(text.contains("• Оптика — 1 книга"));
+        assertTrue(text.contains("• Механика — общий курс — 3 книги"));
+        assertTrue(text.contains("• Квантовая механика — 5 книг"));
+    }
+
+    @Test
+    void emptySubjectsListHandled() {
+        assertEquals("Предметов пока нет.", BotMessageFormatter.buildSubjects(List.of()));
     }
 }
