@@ -1,14 +1,21 @@
 package org.idubinov.termfind.bot;
 
+import org.idubinov.termfind.models.BookRequest;
 import org.idubinov.termfind.models.Entry;
 import org.idubinov.termfind.models.Term;
 import org.idubinov.termfind.ai.SummaryService;
+import org.idubinov.termfind.service.BookService;
 import org.idubinov.termfind.service.EntryService;
 import org.idubinov.termfind.service.SearchService;
 import org.idubinov.termfind.service.SubjectService;
 import org.idubinov.termfind.service.UserService;
 import org.idubinov.termfind.util.PdfPageRenderer;
+import org.idubinov.termfind.util.TermNormalizer;
 import java.io.File;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
@@ -31,6 +38,7 @@ import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
 import org.telegram.telegrambots.updatesreceivers.DefaultBotSession;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -39,7 +47,8 @@ import java.util.concurrent.Executors;
  * Telegram-бот: пользователь шлет термин — бот возвращает определения и упоминания
  * (отдельными сообщениями, полными текстами). Для админа — кнопки ✅ на каждое
  * вхождение и 🔒 финализация термина. Long polling стартует по ApplicationReadyEvent.
- * Команды: /start, /help, /subjects; любой текст без «/» считается поисковым запросом.
+ * Команды: /start, /help, /subjects, /upload; любой текст без «/» считается
+ * поисковым запросом. Поиск нового термина и загрузка PDF идут в фоновых пулах.
  */
 @Component
 public class TermFindBot extends TelegramLongPollingBot {
@@ -48,6 +57,9 @@ public class TermFindBot extends TelegramLongPollingBot {
 
     private static final String UNKNOWN_COMMAND =
             "Не знаю такой команды. Просто пришли термин текстом или /help.";
+    /** Telegram ограничивает скачивание файлов ботами 20 МБ. */
+    private static final long MAX_PDF_BYTES = 20L * 1024 * 1024;
+    private static final Path UPLOADS_DIR = Path.of("uploads");
 
     private final BotConfig config;
     private final SearchService searchService;
@@ -55,17 +67,28 @@ public class TermFindBot extends TelegramLongPollingBot {
     private final SummaryService summaryService;
     private final UserService userService;
     private final SubjectService subjectService;
+    private final BookService bookService;
     /** LLM отвечает 5-20 сек — обрабатываем кнопку вне потока polling. */
     private final ExecutorService aiExecutor = Executors.newFixedThreadPool(2);
+    /** Индексация нового термина (сотни страниц) — вне потока polling. */
+    private final ExecutorService indexingExecutor = Executors.newFixedThreadPool(2);
+    /** Извлечение одобренной книги (страницы + определения + TOC) — фон. */
+    private final ExecutorService extractionExecutor = Executors.newFixedThreadPool(2);
+    /** chatId -> выбранный предмет в диалоге /upload. */
+    private final Map<Long, Long> uploadSubjectPick = new ConcurrentHashMap<>();
+    /** normalizedTerm -> true, пока идёт индексация (дедуп параллельных запросов). */
+    private final Map<String, Boolean> inFlightSearch = new ConcurrentHashMap<>();
 
     public TermFindBot(BotConfig config, SearchService searchService, EntryService entryService,
-                       SummaryService summaryService, UserService userService, SubjectService subjectService) {
+                       SummaryService summaryService, UserService userService, SubjectService subjectService,
+                       BookService bookService) {
         this.config = config;
         this.searchService = searchService;
         this.entryService = entryService;
         this.summaryService = summaryService;
         this.userService = userService;
         this.subjectService = subjectService;
+        this.bookService = bookService;
     }
 
     /** Регистрация long polling — только когда контекст полностью готов. */
@@ -107,6 +130,8 @@ public class TermFindBot extends TelegramLongPollingBot {
                 } else {
                     handleSearch(message);
                 }
+            } else if (update.hasMessage() && update.getMessage().hasDocument()) {
+                handleDocument(update.getMessage());
             } else if (update.hasCallbackQuery()) {
                 handleCallback(update.getCallbackQuery());
             }
@@ -130,6 +155,11 @@ public class TermFindBot extends TelegramLongPollingBot {
                     .chatId(chatId)
                     .text(BotMessageFormatter.buildSubjects(subjectService.listWithBookCounts()))
                     .build());
+            case "/upload" -> executeSilently(SendMessage.builder()
+                    .chatId(chatId)
+                    .text("📚 Выбери предмет для новой книги:")
+                    .replyMarkup(BotMessageFormatter.buildSubjectPickerKeyboard(subjectService.listWithBookCounts()))
+                    .build());
             default -> executeSilently(SendMessage.builder()
                     .chatId(chatId)
                     .text(UNKNOWN_COMMAND)
@@ -140,9 +170,42 @@ public class TermFindBot extends TelegramLongPollingBot {
     private void handleSearch(Message message) {
         String term = message.getText().trim();
         long chatId = message.getChatId();
+        long viewerId = message.getFrom() != null ? message.getFrom().getId() : chatId;
 
+        // известный термин — карточка сразу; новый — индексация в фоне
+        if (entryService.findTermByQuery(term).isPresent()) {
+            presentSearch(viewerId, chatId, term);
+            return;
+        }
+
+        String normalized = TermNormalizer.normalize(term);
+        if (normalized.isEmpty()) return;
+        if (inFlightSearch.putIfAbsent(normalized, true) != null) {
+            executeSilently(SendMessage.builder().chatId(chatId)
+                    .text("⏳ «" + term + "» уже ищется, скоро пришлю результат").build());
+            return;
+        }
+
+        executeSilently(SendMessage.builder().chatId(chatId)
+                .text("🔍 Ищу «" + term + "» по книгам… впервые это занимает до минуты").build());
+        indexingExecutor.submit(() -> {
+            try {
+                searchService.search(term);
+                presentSearch(viewerId, chatId, term);
+            } catch (Exception e) {
+                log.error("Ошибка индексации термина «{}»", term, e);
+                executeSilently(SendMessage.builder().chatId(chatId)
+                        .text("⚠️ Не удалось проиндексировать «" + term + "», попробуй позже").build());
+            } finally {
+                inFlightSearch.remove(normalized);
+            }
+        });
+    }
+
+    /** Карточка + TXT-отчёт по уже проиндексированному термину. */
+    private void presentSearch(long viewerId, long chatId, String term) {
         List<Entry> entries = searchService.search(term);
-        boolean isAdmin = chatId == config.adminId();
+        boolean isAdmin = viewerId == config.adminId();
         Optional<Term> termEntity = entryService.findTermByQuery(term);
         boolean finalized = termEntity.map(Term::isFinalized).orElse(false);
 
@@ -150,7 +213,7 @@ public class TermFindBot extends TelegramLongPollingBot {
         // кнопки модерации — по всем вхождениям (админ видит и то, что фильтр отбросил)
         List<Entry> presentable = entryService.presentable(term);
 
-        InlineKeyboardMarkup keyboard = BotMessageFormatter.buildModerationKeyboard(entries, chatId,
+        InlineKeyboardMarkup keyboard = BotMessageFormatter.buildModerationKeyboard(entries, viewerId,
                 config.adminId(), finalized ? null : termEntity.map(Term::getId).orElse(null));
         keyboard = withExplainButton(keyboard, termEntity.map(Term::getId).orElse(null));
         SendMessage header = SendMessage.builder()
@@ -168,6 +231,58 @@ public class TermFindBot extends TelegramLongPollingBot {
             sendDocument(chatId, ReportExporter.fileName(term),
                     ReportExporter.export(term, presentable, entries.size() - presentable.size()));
         }
+    }
+
+    /** PDF-файл в диалоге /upload: скачивание, заявка, уведомление админа. */
+    private void handleDocument(Message message) {
+        long chatId = message.getChatId();
+        Long subjectId = uploadSubjectPick.remove(chatId);
+        if (subjectId == null) {
+            executeSilently(SendMessage.builder().chatId(chatId)
+                    .text("Сначала выбери предмет: /upload").build());
+            return;
+        }
+        long userId = message.getFrom() != null ? message.getFrom().getId() : chatId;
+
+        var document = message.getDocument();
+        if (document.getFileSize() != null && document.getFileSize() > MAX_PDF_BYTES) {
+            executeSilently(SendMessage.builder().chatId(chatId)
+                    .text("Файл больше 20 МБ — Telegram не даёт ботам скачивать такие файлы 🙈").build());
+            return;
+        }
+
+        executeSilently(SendMessage.builder().chatId(chatId)
+                .text("⏳ Проверяю файл… это займёт до минуты").build());
+        aiExecutor.submit(() -> {
+            try {
+                Files.createDirectories(UPLOADS_DIR);
+                var getFile = execute(new org.telegram.telegrambots.meta.api.methods.GetFile(document.getFileId()));
+                String safeName = document.getFileName() == null ? "book.pdf" : document.getFileName();
+                File pdf = downloadFile(getFile, UPLOADS_DIR.resolve(UUID.randomUUID() + "-" + safeName).toFile());
+
+                var outcome = bookService.createRequest(userId, subjectId, pdf.toPath(), safeName);
+                executeSilently(SendMessage.builder().chatId(chatId).text(outcome.message()).build());
+                if (outcome.ok()) {
+                    sendRequestToAdmin(outcome);
+                }
+            } catch (Exception e) {
+                log.error("Ошибка обработки PDF от пользователя {}", userId, e);
+                executeSilently(SendMessage.builder().chatId(chatId)
+                        .text("⚠️ Не удалось обработать файл, попробуй ещё раз").build());
+            }
+        });
+    }
+
+    private void sendRequestToAdmin(BookService.RequestOutcome outcome) {
+        BookRequest request = outcome.request();
+        executeSilently(SendMessage.builder()
+                .chatId(config.adminId())
+                .text("📥 Новая заявка на книгу\n"
+                        + "👤 от: " + request.getUserTelegramId() + "\n"
+                        + "📚 предмет: " + outcome.subjectName() + "\n"
+                        + "📄 файл: " + request.getTitle())
+                .replyMarkup(BotMessageFormatter.buildRequestAdminKeyboard(request.getId()))
+                .build());
     }
 
     /** Отправка с HTML; если Telegram не принял разметку — повтор без parseMode. */
@@ -202,6 +317,16 @@ public class TermFindBot extends TelegramLongPollingBot {
         String data = callbackQuery.getData();
         if (data == null) return;
 
+        if (data.startsWith("picksub:")) {
+            // диалог /upload доступен любому пользователю
+            long subjectId = Long.parseLong(data.substring("picksub:".length()));
+            if (callbackQuery.getMessage() != null) {
+                uploadSubjectPick.put(callbackQuery.getMessage().getChatId(), subjectId);
+            }
+            answerCallback(callbackQuery.getId(), "Теперь отправь файл PDF (до 20 МБ)");
+            return;
+        }
+
         if (data.startsWith("explain:")) {
             long termId = Long.parseLong(data.substring("explain:".length()));
             handleExplain(callbackQuery, termId);
@@ -219,7 +344,11 @@ public class TermFindBot extends TelegramLongPollingBot {
             return; // модерировать может только админ
         }
 
-        if (data.startsWith("approve:")) {
+        if (data.startsWith("reqap:")) {
+            handleRequestApprove(callbackQuery, Long.parseLong(data.substring("reqap:".length())));
+        } else if (data.startsWith("reqre:")) {
+            handleRequestReject(callbackQuery, Long.parseLong(data.substring("reqre:".length())));
+        } else if (data.startsWith("approve:")) {
             long entryId = Long.parseLong(data.substring("approve:".length()));
             boolean approved = entryService.approveEntry(entryId);
             answerCallback(callbackQuery.getId(),
@@ -240,6 +369,52 @@ public class TermFindBot extends TelegramLongPollingBot {
                         "🔒 Термин финализирован: неподтвержденные вхождения удалены, " +
                                 "остались только ✅. Аппрувы больше недоступны.");
             }
+        }
+    }
+
+    /** Одобрение заявки: книга попадает в базу, извлечение страниц уходит в фон. */
+    private void handleRequestApprove(CallbackQuery callbackQuery, long requestId) {
+        org.idubinov.termfind.models.Book book;
+        try {
+            book = bookService.approve(requestId);
+        } catch (IllegalStateException e) {
+            answerCallback(callbackQuery.getId(), e.getMessage());
+            return;
+        }
+        answerCallback(callbackQuery.getId(), "✅ Одобрено, парсю книгу…");
+        if (callbackQuery.getMessage() != null) {
+            editMessage(callbackQuery.getMessage().getMessageId(), callbackQuery.getMessage().getChatId(),
+                    "⏳ Индексирую «" + book.getTitle() + "»…");
+        }
+        extractionExecutor.submit(() -> {
+            try {
+                var stats = bookService.extractBook(book.getId());
+                if (callbackQuery.getMessage() != null) {
+                    editMessage(callbackQuery.getMessage().getMessageId(), callbackQuery.getMessage().getChatId(),
+                            "📖 «" + book.getTitle() + "» готова: " + stats.pages() + " стр., "
+                                    + stats.definitions() + " определений, оглавление: "
+                                    + (stats.tocFound() ? "есть" : "нет"));
+                }
+            } catch (Exception e) {
+                log.error("Ошибка индексации книги «{}»", book.getTitle(), e);
+                if (callbackQuery.getMessage() != null) {
+                    editMessage(callbackQuery.getMessage().getMessageId(), callbackQuery.getMessage().getChatId(),
+                            "⚠️ Ошибка индексации «" + book.getTitle() + "», см. логи");
+                }
+            }
+        });
+    }
+
+    private void handleRequestReject(CallbackQuery callbackQuery, long requestId) {
+        try {
+            bookService.reject(requestId, "Отклонено админом");
+            answerCallback(callbackQuery.getId(), "❌ Отклонено");
+            if (callbackQuery.getMessage() != null) {
+                editMessage(callbackQuery.getMessage().getMessageId(), callbackQuery.getMessage().getChatId(),
+                        "❌ Заявка отклонена");
+            }
+        } catch (IllegalStateException e) {
+            answerCallback(callbackQuery.getId(), e.getMessage());
         }
     }
 

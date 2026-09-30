@@ -59,6 +59,32 @@ public final class BotMessageFormatter {
         return "книг";
     }
 
+    /** Клавиатура выбора предмета в диалоге /upload (callback picksub:<id>). */
+    public static InlineKeyboardMarkup buildSubjectPickerKeyboard(List<SubjectService.SubjectView> subjects) {
+        List<List<InlineKeyboardButton>> rows = new java.util.ArrayList<>();
+        for (SubjectService.SubjectView s : subjects) {
+            rows.add(List.of(InlineKeyboardButton.builder()
+                    .text(s.name())
+                    .callbackData("picksub:" + s.id())
+                    .build()));
+        }
+        return rows.isEmpty() ? null : new InlineKeyboardMarkup(rows);
+    }
+
+    /** Кнопки модерации заявки на книгу: [✅ Одобрить] [❌ Отклонить] (callback reqap/reqre). */
+    public static InlineKeyboardMarkup buildRequestAdminKeyboard(long requestId) {
+        return new InlineKeyboardMarkup(List.of(
+                List.of(
+                        InlineKeyboardButton.builder()
+                                .text("✅ Одобрить")
+                                .callbackData("reqap:" + requestId)
+                                .build(),
+                        InlineKeyboardButton.builder()
+                                .text("❌ Отклонить")
+                                .callbackData("reqre:" + requestId)
+                                .build())));
+    }
+
     /**
      * Карточка термина (HTML): заголовок, лучшее определение, альтернативные формулировки,
      * страницы упоминаний. Экранирование HTML — обязанность вызывающего текста, здесь экранируем сами.

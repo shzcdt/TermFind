@@ -22,7 +22,7 @@ public class SubjectService implements ApplicationRunner {
             "Квантовая механика", "Физика твёрдого тела",
             "Математическая физика", "Теория поля");
 
-    public record SubjectView(String name, String description, long bookCount) {
+    public record SubjectView(long id, String name, String description, long bookCount) {
     }
 
     private final SubjectRepository subjectRepository;
@@ -51,7 +51,7 @@ public class SubjectService implements ApplicationRunner {
         }
         return subjectRepository.findAll().stream()
                 .sorted(Comparator.comparing(Subject::getName))
-                .map(s -> new SubjectView(s.getName(), s.getDescription(),
+                .map(s -> new SubjectView(s.getId(), s.getName(), s.getDescription(),
                         counts.getOrDefault(s.getId(), 0L)))
                 .toList();
     }

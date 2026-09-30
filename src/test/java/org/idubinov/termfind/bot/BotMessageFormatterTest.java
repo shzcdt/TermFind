@@ -176,9 +176,9 @@ class BotMessageFormatterTest {
     @Test
     void subjectsListWithPluralizedBookCounts() {
         String text = BotMessageFormatter.buildSubjects(List.of(
-                new SubjectService.SubjectView("Оптика", null, 1),
-                new SubjectService.SubjectView("Механика", "общий курс", 3),
-                new SubjectService.SubjectView("Квантовая механика", null, 5)));
+                new SubjectService.SubjectView(1, "Оптика", null, 1),
+                new SubjectService.SubjectView(2, "Механика", "общий курс", 3),
+                new SubjectService.SubjectView(3, "Квантовая механика", null, 5)));
 
         assertTrue(text.contains("• Оптика — 1 книга"));
         assertTrue(text.contains("• Механика — общий курс — 3 книги"));
