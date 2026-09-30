@@ -46,7 +46,8 @@ public class WordService {
         return "termfind_" + safe + ".docx";
     }
 
-    public byte[] export(String term, List<Entry> presentable, List<String> usageLines) {
+    public byte[] export(String term, List<Entry> presentable, List<String> usageLines,
+                         Map<String, String> schemaDescriptions) {
         try (XWPFDocument doc = new XWPFDocument();
              ByteArrayOutputStream out = new ByteArrayOutputStream()) {
 
@@ -68,7 +69,7 @@ public class WordService {
                 sourceLine(doc, definition);
             }
 
-            addPageImages(doc, definitions);
+            addPageImages(doc, definitions, schemaDescriptions);
 
             heading(doc, "🔍 Где используется", 14);
             if (usageLines != null && !usageLines.isEmpty()) {
@@ -88,7 +89,7 @@ public class WordService {
         }
     }
 
-    private void addPageImages(XWPFDocument doc, List<Entry> definitions) {
+    private void addPageImages(XWPFDocument doc, List<Entry> definitions, Map<String, String> schemaDescriptions) {
         Set<String> seen = new LinkedHashSet<>();
         int added = 0;
         for (Entry definition : definitions) {
@@ -101,6 +102,14 @@ public class WordService {
                 caption(doc, "🖼 " + definition.getBook().getTitle()
                         + ", стр. " + definition.getPageNumber());
                 image(doc, png);
+                String description = schemaDescriptions.get(key);
+                if (description != null && !description.isBlank()) {
+                    XWPFParagraph p = doc.createParagraph();
+                    XWPFRun run = p.createRun();
+                    run.setText("🧠 " + description.replaceAll("\\s+", " ").trim());
+                    run.setItalic(true);
+                    run.setFontSize(10);
+                }
                 added++;
             } catch (Exception e) {
                 log.warn("Не удалось вставить страницу {} в Word: {}", key, e.getMessage());

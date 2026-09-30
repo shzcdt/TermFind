@@ -4,6 +4,7 @@ import org.idubinov.termfind.models.BookRequest;
 import org.idubinov.termfind.models.Entry;
 import org.idubinov.termfind.models.Term;
 import org.idubinov.termfind.ai.SummaryService;
+import org.idubinov.termfind.ai.VisionService;
 import org.idubinov.termfind.service.BookService;
 import org.idubinov.termfind.service.EntryService;
 import org.idubinov.termfind.service.FeedbackService;
@@ -73,6 +74,7 @@ public class TermFindBot extends TelegramLongPollingBot {
     private final BookService bookService;
     private final FeedbackService feedbackService;
     private final WordService wordService;
+    private final VisionService visionService;
     /** LLM отвечает 5-20 сек — обрабатываем кнопку вне потока polling. */
     private final ExecutorService aiExecutor = Executors.newFixedThreadPool(2);
     /** Индексация нового термина (сотни страниц) — вне потока polling. */
@@ -88,7 +90,8 @@ public class TermFindBot extends TelegramLongPollingBot {
 
     public TermFindBot(BotConfig config, SearchService searchService, EntryService entryService,
                        SummaryService summaryService, UserService userService, SubjectService subjectService,
-                       BookService bookService, FeedbackService feedbackService, WordService wordService) {
+                       BookService bookService, FeedbackService feedbackService, WordService wordService,
+                       VisionService visionService) {
         this.config = config;
         this.searchService = searchService;
         this.entryService = entryService;
@@ -98,6 +101,7 @@ public class TermFindBot extends TelegramLongPollingBot {
         this.bookService = bookService;
         this.feedbackService = feedbackService;
         this.wordService = wordService;
+        this.visionService = visionService;
     }
 
     /** Регистрация long polling — только когда контекст полностью готов. */
@@ -390,6 +394,11 @@ public class TermFindBot extends TelegramLongPollingBot {
             return;
         }
 
+        if (data.startsWith("vision:")) {
+            handleVision(callbackQuery, Long.parseLong(data.substring("vision:".length())));
+            return;
+        }
+
         if (data.startsWith("word:")) {
             handleWord(callbackQuery, Long.parseLong(data.substring("word:".length())));
             return;
@@ -572,6 +581,11 @@ public class TermFindBot extends TelegramLongPollingBot {
                     org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton.builder()
                             .text("🔬 Строже").callbackData("stricter:" + termId).build()));
         }
+        if (visionService.isEnabled()) {
+            rows.add(List.of(
+                    org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton.builder()
+                            .text("🖼 Описать схемы").callbackData("vision:" + termId).build()));
+        }
         rows.add(List.of(
                 org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton.builder()
                         .text("📄 Word").callbackData("word:" + termId).build(),
@@ -580,6 +594,37 @@ public class TermFindBot extends TelegramLongPollingBot {
                 org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton.builder()
                         .text("👎 Не то").callbackData("vote:" + termId + ":down").build()));
         return new InlineKeyboardMarkup(rows);
+    }
+
+    /** 🖼 Описать схемы: Vision-описания страниц с определениями (кэш в images.description). */
+    private void handleVision(CallbackQuery callbackQuery, long termId) {
+        long chatId = callbackQuery.getMessage() != null ? callbackQuery.getMessage().getChatId() : 0;
+        answerCallback(callbackQuery.getId(), "🖼 Описываю схемы… до 30 сек");
+        aiExecutor.submit(() -> {
+            try {
+                var termOpt = entryService.findTermById(termId);
+                if (termOpt.isEmpty()) return;
+                String termName = termOpt.get().getDisplayForm();
+                var schemas = visionService.describeForTerm(termName, entryService.presentable(termName));
+                if (schemas.isEmpty()) {
+                    executeSilently(SendMessage.builder().chatId(chatId)
+                            .text("😕 Схем не нашлось — или на страницах определений нет иллюстраций, "
+                                    + "или Vision недоступен").build());
+                    return;
+                }
+                for (var schema : schemas) {
+                    executeSilently(SendMessage.builder().chatId(chatId)
+                            .text(BotMessageFormatter.esc("🖼 «" + schema.bookTitle() + "», стр. "
+                                    + schema.page() + ":\n" + schema.description()))
+                            .parseMode(ParseMode.HTML)
+                            .build());
+                }
+            } catch (Exception e) {
+                log.error("Ошибка Vision для термина {}", termId, e);
+                executeSilently(SendMessage.builder().chatId(chatId)
+                        .text("⚠️ Vision недоступен, попробуй позже").build());
+            }
+        });
     }
 
     /** 📄 Word: сборка .docx «как в учебнике» в фоновом пуле, отправка файлом. */
@@ -592,7 +637,14 @@ public class TermFindBot extends TelegramLongPollingBot {
                 if (termOpt.isEmpty()) return;
                 String termName = termOpt.get().getDisplayForm();
                 List<Entry> presentable = entryService.presentable(termName);
-                byte[] docx = wordService.export(termName, presentable, buildUsageLines(presentable));
+                Map<String, String> schemaDescriptions = new java.util.LinkedHashMap<>();
+                if (visionService.isEnabled()) {
+                    for (var schema : visionService.describeForTerm(termName, presentable)) {
+                        schemaDescriptions.put(schema.bookId() + ":" + schema.page(), schema.description());
+                    }
+                }
+                byte[] docx = wordService.export(termName, presentable, buildUsageLines(presentable),
+                        schemaDescriptions);
                 execute(org.telegram.telegrambots.meta.api.methods.send.SendDocument.builder()
                         .chatId(chatId)
                         .document(new InputFile(new java.io.ByteArrayInputStream(docx), WordService.fileName(termName)))

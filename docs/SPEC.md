@@ -260,13 +260,13 @@ ALTER TABLE entries ADD COLUMN llm_type    VARCHAR(16), -- DEFINITION|USAGE|NOIS
 - [x] Приветствие дополнено /upload и кнопками; кнопки карточки: [🧠 💡 🔬] + [📄 👍 👎]
 - [x] Тесты: голоса (add/change/cancel), пороги 3👍/3👎 (однократность), структура docx (текст, источники, картинки; mentions-only) — 53 теста зелёных
 
-### Фаза E — Vision и картинки
-- [ ] Факт-чек DeepSeek V4.1 Flash image input (тариф, лимиты); fallback — второй OpenAI-совместимый провайдер через `llm.vision-*` свойства
-- [ ] `LlmClient.completeWithImage(system, user, imageBase64)` — multimodal content
-- [ ] Триггер: топ-1..2 страницы с определениями термина → рендер `PdfPageRenderer` → Vision-промпт «Опиши схему и её связь с термином X» → `images.description`
-- [ ] Кэш описаний в `images.description` (привязано к странице, не к запросу)
-- [ ] Вставка картинок + описаний в Word; лимит 1–2 схемы на термин
-- [ ] Флаг `llm.vision.enabled=false` — фича тихо отключается (mitigation из черновика)
+### Фаза E — Vision и картинки ✅ (2026-09-30)
+- [x] Факт-чек провайдера: DeepSeek V4-поколение заявляет image input (проверено 2026-09); по умолчанию Vision ВЫКЛЮЧЕН (`llm.vision.enabled=false`) — включается `LLM_VISION_ENABLED=true` + модель с приёмом картинок (`LLM_VISION_MODEL`)
+- [x] `LlmClient.completeWithImage` — multimodal content (text + image_url base64 data URI), отдельная модель `llm.vision.model`, `isVisionEnabled()`
+- [x] `VisionService`: топ-страницы с определениями (лимит 2 на термин) → рендер `PdfPageRenderer` → промпт → `images.description`; источник всегда PAGE_RENDER (решение №6)
+- [x] Кэш описаний в `images.description` (таблица `images`, уникальность книга+страница; PNG сохраняются в `images/`)
+- [x] Интеграции: кнопка «🖼 Описать схемы» на карточке; в Word — описание курсивом под картинкой страницы
+- [x] Тесты: флаги Vision, структура multimodal-запроса, лимит 2 схемы, кэш описаний без повторного вызова LLM (59 тестов зелёных)
 
 ---
 
@@ -309,7 +309,8 @@ precision ≥ 85% · recall ≥ 70% · время ответа < 5 с · дол�
 
 ## 9. История изменений ТЗ
 
-- **2026-09-29 — Фаза A реализована:** users/subjects/book_subjects, команды /start /help /subjects, поля Book и Term под будущие фазы, секреты в env, чистка мёртвого кода (ContextExtractor, Lucene), schema.sql синхронизирован, 33 теста зелёные. Вручную за разработчиком: ревокация токена у BotFather + env-переменные запуска.
+- **2026-09-30 — фазы B–E реализованы** (коммиты `10d0b38`, `de68044`, `f0f7d10`, фаза E): весь MVP-объём ТЗ 2.0 в коде. Для запуска новых фич: перезапустить приложение (Hibernate создаст `pages/images/book_requests/feedback/llm_cache/users`...); Vision включается env-флагом `LLM_VISION_ENABLED=true`.
+- **2026-09-30 — Фаза A реализована:** users/subjects/book_subjects, команды /start /help /subjects, поля Book и Term под будущие фазы, env-токены, чистка мёртвого кода (ContextExtractor, Lucene), schema.sql синхронизирован, 33 теста зелёные. Вручную за разработчиком: ревокация токена у BotFather + env-переменные запуска.
 - **2026-09-29 — v2.0:** черновик 1.0 сверен с кодом; зафиксированы решения №1–10;
   добавлены таблицы `pages` (ключевое архитектурное отличие от черновика) и
   `llm_cache`; Vision переведён на «рендер страниц + факт-чек тарифа»;

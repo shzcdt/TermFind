@@ -31,7 +31,7 @@ class SummaryServiceTest {
         private int calls = 0;
 
         FakeLlmClient(boolean enabled, CompleteFn fn) {
-            super("http://localhost:0", enabled ? "key" : "", "test-model");
+            super("http://localhost:0", enabled ? "key" : "", "test-model", false, "test-model");
             this.fn = fn;
         }
 

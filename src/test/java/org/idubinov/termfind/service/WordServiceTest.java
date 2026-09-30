@@ -47,7 +47,8 @@ class WordServiceTest {
                 List.of(
                         entry(Entry.EntryType.DEFINITION, 1, "Тензор — это объект линейного преобразования."),
                         entry(Entry.EntryType.MENTION, 2, "Тензоры широко применяются в теории упругости.")),
-                List.of("• Глава 1 — Введение — со стр. 1"));
+                List.of("• Глава 1 — Введение — со стр. 1"),
+                java.util.Map.of());
 
         assertTrue(docx.length > 1000, "docx не пустой");
 
@@ -76,10 +77,29 @@ class WordServiceTest {
     }
 
     @Test
+    void visionDescriptionAppearsUnderImage() throws Exception {
+        Book book = new Book("Глинский. Наноструктуры", testPdf.getAbsolutePath(), 2);
+        book.setId(77L);
+        Entry definition = new Entry(new Term("тензор", "тенз"), book, 1,
+                "Тензор — это объект.", Entry.EntryType.DEFINITION, false);
+
+        byte[] docx = service.export("тензор",
+                List.of(definition),
+                List.of(),
+                java.util.Map.of("77:1", "На странице схема кристаллической решётки."));
+
+        try (XWPFDocument doc = new XWPFDocument(new ByteArrayInputStream(docx))) {
+            String text = doc.getParagraphs().stream().map(p -> p.getText()).reduce("", (a, b) -> a + "\n" + b);
+            assertTrue(text.contains("схема кристаллической решётки"), "описание Vision под картинкой");
+        }
+    }
+
+    @Test
     void mentionsOnlyStillProducesDocx() throws Exception {
         byte[] docx = service.export("чушь",
                 List.of(entry(Entry.EntryType.MENTION, 2, "просто упоминание")),
-                List.of());
+                List.of(),
+                java.util.Map.of());
 
         try (XWPFDocument doc = new XWPFDocument(new ByteArrayInputStream(docx))) {
             String text = doc.getParagraphs().stream().map(p -> p.getText()).reduce("", (a, b) -> a + "\n" + b);
