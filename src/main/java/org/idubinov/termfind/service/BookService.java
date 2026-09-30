@@ -199,6 +199,11 @@ public class BookService {
         return request;
     }
 
+    @Transactional(readOnly = true)
+    public List<BookRequest> pendingRequests() {
+        return bookRequestRepository.findByStatusOrderByIdAsc(BookRequest.Status.PENDING);
+    }
+
     private Term findOrCreateTerm(String displayForm) {
         String base = TermNormalizer.normalize(displayForm);
         final String normalized = base.isEmpty() ? displayForm.toLowerCase().trim() : base;
