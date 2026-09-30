@@ -95,6 +95,37 @@ class WordServiceTest {
     }
 
     @Test
+    void strictExportRendersLatexFormulasAsImages() throws Exception {
+        String strictAnswer = "Тензор ранга два определяется разложением $A = (e_i \\otimes e_k) A^{ik}$, "
+                + "где компоненты преобразуются по закону $A'^{mn} = T^m{}_i T^n{}_k A^{ik}$.";
+        byte[] docx = service.exportStrict("тензор", strictAnswer,
+                List.of(entry(Entry.EntryType.DEFINITION, 1, "Тензор — это объект.")));
+
+        try (XWPFDocument doc = new XWPFDocument(new ByteArrayInputStream(docx))) {
+            String text = doc.getParagraphs().stream().map(p -> p.getText()).reduce("", (a, b) -> a + "\n" + b);
+            assertTrue(text.contains("Строгое определение"));
+            assertTrue(text.contains("ранга два"), "текстовый сегмент присутствует");
+            assertTrue(text.contains("где компоненты"), "текст между формулами сохранён");
+            int images = (int) doc.getParagraphs().stream()
+                    .flatMap(p -> p.getRuns().stream())
+                    .flatMap(r -> r.getEmbeddedPictures().stream())
+                    .count();
+            assertEquals(2, images, "обе $формулы$ отрендерены картинками");
+        }
+    }
+
+    @Test
+    void strictExportSurvivesBrokenLatex() throws Exception {
+        byte[] docx = service.exportStrict("тензор", "Сломанная формула $\\frac{{{!}$ в тексте.",
+                List.of(entry(Entry.EntryType.MENTION, 2, "упоминание")));
+
+        try (XWPFDocument doc = new XWPFDocument(new ByteArrayInputStream(docx))) {
+            String text = doc.getParagraphs().stream().map(p -> p.getText()).reduce("", (a, b) -> a + "\n" + b);
+            assertTrue(text.contains("Сломанная формула"), "документ собрался, хотя формула не отрендерилась");
+        }
+    }
+
+    @Test
     void mentionsOnlyStillProducesDocx() throws Exception {
         byte[] docx = service.export("чушь",
                 List.of(entry(Entry.EntryType.MENTION, 2, "просто упоминание")),

@@ -1,10 +1,12 @@
 package org.idubinov.termfind.bot;
 
+import org.idubinov.termfind.models.AnswerFeedback;
 import org.idubinov.termfind.models.BookRequest;
 import org.idubinov.termfind.models.Entry;
 import org.idubinov.termfind.models.Term;
 import org.idubinov.termfind.ai.SummaryService;
 import org.idubinov.termfind.ai.VisionService;
+import org.idubinov.termfind.service.AnswerFeedbackService;
 import org.idubinov.termfind.service.BookService;
 import org.idubinov.termfind.service.EntryService;
 import org.idubinov.termfind.service.FeedbackService;
@@ -75,6 +77,12 @@ public class TermFindBot extends TelegramLongPollingBot {
     private final FeedbackService feedbackService;
     private final WordService wordService;
     private final VisionService visionService;
+    private final AnswerFeedbackService answerFeedbackService;
+    /** chatId -> активная сессия /moderate (админ модерит вхождения по одному). */
+    private final Map<Long, ModerationSession> moderateSessions = new ConcurrentHashMap<>();
+
+    private record ModerationSession(Long termId, String termName, java.util.Deque<Long> entryIds) {
+    }
     /** LLM отвечает 5-20 сек — обрабатываем кнопку вне потока polling. */
     private final ExecutorService aiExecutor = Executors.newFixedThreadPool(2);
     /** Индексация нового термина (сотни страниц) — вне потока polling. */
@@ -91,7 +99,7 @@ public class TermFindBot extends TelegramLongPollingBot {
     public TermFindBot(BotConfig config, SearchService searchService, EntryService entryService,
                        SummaryService summaryService, UserService userService, SubjectService subjectService,
                        BookService bookService, FeedbackService feedbackService, WordService wordService,
-                       VisionService visionService) {
+                       VisionService visionService, AnswerFeedbackService answerFeedbackService) {
         this.config = config;
         this.searchService = searchService;
         this.entryService = entryService;
@@ -102,6 +110,7 @@ public class TermFindBot extends TelegramLongPollingBot {
         this.feedbackService = feedbackService;
         this.wordService = wordService;
         this.visionService = visionService;
+        this.answerFeedbackService = answerFeedbackService;
     }
 
     /** Регистрация long polling — только когда контекст полностью готов. */
@@ -174,6 +183,7 @@ public class TermFindBot extends TelegramLongPollingBot {
                     .replyMarkup(BotMessageFormatter.buildSubjectPickerKeyboard(subjectService.listWithBookCounts()))
                     .build());
             case "/pending" -> handlePending(chatId);
+            case "/moderate" -> handleModerate(text, chatId);
             default -> executeSilently(SendMessage.builder()
                     .chatId(chatId)
                     .text(UNKNOWN_COMMAND)
@@ -216,25 +226,23 @@ public class TermFindBot extends TelegramLongPollingBot {
         });
     }
 
-    /** Карточка + TXT-отчёт по уже проиндексированному термину. */
+    /** Карточка + клавиатура по уже проиндексированному термину. */
     private void presentSearch(long viewerId, long chatId, String term) {
         List<Entry> entries = searchService.search(term);
-        boolean isAdmin = viewerId == config.adminId();
         Optional<Term> termEntity = entryService.findTermByQuery(term);
         boolean finalized = termEntity.map(Term::isFinalized).orElse(false);
         Long termId = termEntity.map(Term::getId).orElse(null);
         String summary = termEntity.map(Term::getSummary).orElse(null);
 
-        // Показываем пользователю только отфильтрованное и отсортированное;
-        // кнопки модерации — по всем вхождениям (админ видит и то, что фильтр отбросил)
         List<Entry> presentable = entryService.presentable(term);
 
-        InlineKeyboardMarkup keyboard = BotMessageFormatter.buildModerationKeyboard(entries, viewerId,
-                config.adminId(), finalized ? null : termId);
-        keyboard = withExtraButtons(keyboard, termId);
+        InlineKeyboardMarkup keyboard = BotMessageFormatter.buildCardKeyboard(termId,
+                summaryService.isEnabled(), visionService.isEnabled(), presentable, 0);
         SendMessage header = SendMessage.builder()
                 .chatId(chatId)
-                .text(BotMessageFormatter.buildCard(term, presentable, finalized, summary, buildUsageLines(presentable)))
+                .text(BotMessageFormatter.buildCard(term, presentable, finalized,
+                        summary == null ? null : BotMessageFormatter.mdToHtml(summary),
+                        buildUsageLines(presentable)))
                 .parseMode(ParseMode.HTML)
                 .build();
         if (keyboard != null) {
@@ -242,15 +250,33 @@ public class TermFindBot extends TelegramLongPollingBot {
         }
         sendWithHtmlFallback(header);
 
-        // Файл с полными текстами отфильтрованных вхождений
-        if (!presentable.isEmpty()) {
-            sendDocument(chatId, ReportExporter.fileName(term),
-                    ReportExporter.export(term, presentable, entries.size() - presentable.size()));
-        }
-
         if (!finalized) {
             scheduleAiExtras(term, termId, chatId);
         }
+    }
+
+    /** Пагинация сетки страниц карточки. */
+    private void handlePages(CallbackQuery callbackQuery, long termId, int offset) {
+        var termOpt = entryService.findTermById(termId);
+        if (termOpt.isEmpty()) {
+            answerCallback(callbackQuery.getId(), "Термин не найден");
+            return;
+        }
+        List<Entry> presentable = entryService.presentable(termOpt.get().getDisplayForm());
+        InlineKeyboardMarkup keyboard = BotMessageFormatter.buildCardKeyboard(termId,
+                summaryService.isEnabled(), visionService.isEnabled(), presentable, offset);
+        if (callbackQuery.getMessage() != null && keyboard != null) {
+            try {
+                execute(EditMessageReplyMarkup.builder()
+                        .chatId(callbackQuery.getMessage().getChatId())
+                        .messageId(callbackQuery.getMessage().getMessageId())
+                        .replyMarkup(keyboard)
+                        .build());
+            } catch (TelegramApiException e) {
+                log.warn("Не удалось перелистать страницы: {}", e.getMessage());
+            }
+        }
+        answerCallback(callbackQuery.getId(), null);
     }
 
     /** Разделы использования из оглавлений книг: «• Зонная теория — со стр. 45». */
@@ -283,11 +309,14 @@ public class TermFindBot extends TelegramLongPollingBot {
                 entryService.findTermByQuery(term).ifPresent(t -> {
                     if (t.getSummary() == null || t.getSummary().isBlank()) {
                         summaryService.explain(term).ifPresent(explanation -> {
-                            String text = BotMessageFormatter.esc("🧠 Нейро-определение «" + term + "»:\n"
-                                    + explanation.text() + "\n\n📚 Источники: " + explanation.sources());
+                            String text = "🧠 Нейро-определение «" + BotMessageFormatter.esc(term) + "»:\n"
+                                    + BotMessageFormatter.mdToHtml(explanation.text())
+                                    + "\n\n📚 Источники: " + BotMessageFormatter.esc(explanation.sources());
                             executeSilently(SendMessage.builder().chatId(chatId)
                                     .text(text)
                                     .parseMode(ParseMode.HTML)
+                                    .replyMarkup(BotMessageFormatter.buildAnswerFeedbackKeyboard(
+                                            t.getId(), AnswerFeedback.Kind.EXPLAIN.name()))
                                     .build());
                         });
                     }
@@ -394,6 +423,25 @@ public class TermFindBot extends TelegramLongPollingBot {
             return;
         }
 
+        if (data.startsWith("pages:")) {
+            String[] parts = data.split(":");
+            handlePages(callbackQuery, Long.parseLong(parts[1]), Integer.parseInt(parts[2]));
+            return;
+        }
+
+        if (data.startsWith("expvote:")) {
+            String[] parts = data.split(":"); // expvote:termId:KIND:up|down
+            try {
+                var result = answerFeedbackService.vote(callbackQuery.getFrom().getId(),
+                        Long.parseLong(parts[1]), AnswerFeedback.Kind.valueOf(parts[2]), parts[3].equals("up"));
+                answerCallback(callbackQuery.getId(), (parts[3].equals("up") ? "👍" : "👎") + " учтено · 👍 "
+                        + result.upvotes() + " · 👎 " + result.downvotes());
+            } catch (java.util.NoSuchElementException e) {
+                answerCallback(callbackQuery.getId(), "Термин не найден");
+            }
+            return;
+        }
+
         if (data.startsWith("vision:")) {
             handleVision(callbackQuery, Long.parseLong(data.substring("vision:".length())));
             return;
@@ -433,32 +481,128 @@ public class TermFindBot extends TelegramLongPollingBot {
             return; // модерировать может только админ
         }
 
-        if (data.startsWith("reqap:")) {
-            handleRequestApprove(callbackQuery, Long.parseLong(data.substring("reqap:".length())));
-        } else if (data.startsWith("reqre:")) {
-            handleRequestReject(callbackQuery, Long.parseLong(data.substring("reqre:".length())));
-        } else if (data.startsWith("approve:")) {
-            long entryId = Long.parseLong(data.substring("approve:".length()));
-            boolean approved = entryService.approveEntry(entryId);
-            answerCallback(callbackQuery.getId(),
-                    approved ? "✅ Подтверждено — можно отметить ещё" : "Нельзя: термин финализирован или не найден");
-
-            // Текст карточки не трогаем; из клавиатуры убираем только нажатую кнопку
-            if (approved && callbackQuery.getMessage() != null) {
-                updateModerationKeyboard(callbackQuery.getMessage(), entryId);
+        switch (data) {
+            case String s when s.startsWith("reqap:") ->
+                    handleRequestApprove(callbackQuery, Long.parseLong(s.substring("reqap:".length())));
+            case String s when s.startsWith("reqre:") ->
+                    handleRequestReject(callbackQuery, Long.parseLong(s.substring("reqre:".length())));
+            case String s when s.startsWith("modok:") ->
+                    handleModerationDecision(callbackQuery, Long.parseLong(s.substring("modok:".length())), true);
+            case String s when s.startsWith("modnext:") -> {
+                answerCallback(callbackQuery.getId(), "⏭ Пропущено");
+                sendNextModerationItem(callbackQuery.getMessage() != null ? callbackQuery.getMessage().getChatId() : 0);
             }
-        } else if (data.startsWith("finalize:")) {
-            long termId = Long.parseLong(data.substring("finalize:".length()));
-            boolean finalized = entryService.finalizeTerm(termId);
-            if (finalized) summaryService.invalidateCache(termId);
-            answerCallback(callbackQuery.getId(), finalized ? "🔒 Термин финализирован" : "Не найдено");
-            if (finalized && callbackQuery.getMessage() != null) {
-                editMessage(callbackQuery.getMessage().getMessageId(),
-                        callbackQuery.getMessage().getChatId(),
-                        "🔒 Термин финализирован: неподтвержденные вхождения удалены, " +
-                                "остались только ✅. Аппрувы больше недоступны.");
+            case String s when s.startsWith("modfinish:") -> handleModerationFinish(callbackQuery);
+            case String s when s.startsWith("modquit:") -> {
+                moderateSessions.remove(callbackQuery.getMessage() != null ? callbackQuery.getMessage().getChatId() : 0);
+                answerCallback(callbackQuery.getId(), "Выход из модерации");
             }
+            default -> { }
         }
+    }
+
+    /** ✅/⏭ в сессии /moderate: подтверждение вхождения и переход к следующему. */
+    private void handleModerationDecision(CallbackQuery callbackQuery, long entryId, boolean approve) {
+        long chatId = callbackQuery.getMessage() != null ? callbackQuery.getMessage().getChatId() : 0;
+        boolean approved = entryService.approveEntry(entryId);
+        answerCallback(callbackQuery.getId(), approved ? "✅ Принято" : "Нельзя: термин финализирован или не найден");
+        if (approved) {
+            sendNextModerationItem(chatId);
+        }
+    }
+
+    private void handleModerationFinish(CallbackQuery callbackQuery) {
+        long chatId = callbackQuery.getMessage() != null ? callbackQuery.getMessage().getChatId() : 0;
+        ModerationSession session = moderateSessions.remove(chatId);
+        if (session == null) {
+            answerCallback(callbackQuery.getId(), "Сессия модерации не найдена");
+            return;
+        }
+        boolean finalized = entryService.finalizeTerm(session.termId());
+        if (finalized) {
+            summaryService.invalidateCache(session.termId());
+        }
+        answerCallback(callbackQuery.getId(), finalized ? "🔒 Термин финализирован" : "Не найдено");
+        executeSilently(SendMessage.builder().chatId(chatId)
+                .text(finalized
+                        ? "🔒 Термин «" + session.termName() + "» финализирован: неподтверждённые вхождения удалены, "
+                        + "остались только ✅."
+                        : "Не удалось финализировать термин")
+                .build());
+    }
+
+    /** /moderate <термин>: пошаговая модерация вхождений по одному. */
+    private void handleModerate(String text, long chatId) {
+        if (chatId != config.adminId()) {
+            executeSilently(SendMessage.builder().chatId(chatId)
+                    .text("⚖️ Модерация доступна только админу").build());
+            return;
+        }
+        String[] parts = text.split("\\s+", 2);
+        if (parts.length < 2 || parts[1].isBlank()) {
+            executeSilently(SendMessage.builder().chatId(chatId)
+                    .text("Использование: /moderate <термин>").build());
+            return;
+        }
+        String termName = parts[1].trim();
+        var termOpt = entryService.findTermByQuery(termName);
+        if (termOpt.isEmpty()) {
+            executeSilently(SendMessage.builder().chatId(chatId)
+                    .text("Термин «" + termName + "» не найден — сначала найди его поиском").build());
+            return;
+        }
+        Term term = termOpt.get();
+        List<Entry> queue = entryService.findNotApprovedEntriesByTerm(term.getDisplayForm());
+        if (queue.isEmpty()) {
+            executeSilently(SendMessage.builder().chatId(chatId)
+                    .text(term.isFinalized()
+                            ? "✅ У «" + term.getDisplayForm() + "» нет неподтверждённых вхождений (термин финализирован)"
+                            : "✅ У «" + term.getDisplayForm() + "» нет неподтверждённых вхождений")
+                    .build());
+            return;
+        }
+        java.util.Deque<Long> ids = new java.util.ArrayDeque<>(queue.stream().map(Entry::getId).toList());
+        moderateSessions.put(chatId, new ModerationSession(term.getId(), term.getDisplayForm(), ids));
+        executeSilently(SendMessage.builder().chatId(chatId)
+                .text("⚖️ Модерирую «" + term.getDisplayForm() + "»: " + ids.size()
+                        + " вхождений по одному. ✅ — принять, ⏭ — пропустить.")
+                .build());
+        sendNextModerationItem(chatId);
+    }
+
+    /** Следующее вхождение сессии /moderate; когда кончились — предложение финализации. */
+    private void sendNextModerationItem(long chatId) {
+        ModerationSession session = moderateSessions.get(chatId);
+        if (session == null) return;
+
+        Long entryId = session.entryIds().poll();
+        while (entryId != null && entryService.findEntryWithBook(entryId).isEmpty()) {
+            entryId = session.entryIds().poll(); // вхождение удалено — берём следующее
+        }
+        if (entryId == null) {
+            executeSilently(SendMessage.builder().chatId(chatId)
+                    .text("Очередь закончилась. Осталось закрепить результат:")
+                    .replyMarkup(BotMessageFormatter.buildTwoButtonKeyboard(
+                            "🔒 Завершить термин", "modfinish:" + session.termId(),
+                            "🚪 Выйти", "modquit"))
+                    .build());
+            return;
+        }
+        Entry entry = entryService.findEntryWithBook(entryId).get();
+        String kind = entry.getType() == Entry.EntryType.DEFINITION ? "Определение" : "Упоминание";
+        String llmNote = entry.getLlmType() != null
+                ? " · LLM: " + entry.getLlmType() + " " + Math.round(entry.getLlmScore() != null ? entry.getLlmScore() : 0) + "/10"
+                : "";
+        SendMessage message = SendMessage.builder()
+                .chatId(chatId)
+                .text("⚖️ " + kind + " — <i>" + BotMessageFormatter.esc(entry.getBook().getTitle())
+                        + ", стр. " + entry.getPageNumber() + "</i>" + BotMessageFormatter.esc(llmNote) + "\n"
+                        + BotMessageFormatter.esc(BotMessageFormatter
+                        .stripMarkdown(entry.getText().replaceAll("\\s+", " ").trim())))
+                .parseMode(ParseMode.HTML)
+                .replyMarkup(BotMessageFormatter.buildModerationEntryKeyboard(entry.getId()))
+                .build();
+        sendWithHtmlFallback(message);
     }
 
     /** ⚖️ Очередь модерации: заявки на книги + эскалированные термины. Только админ. */
@@ -541,9 +685,9 @@ public class TermFindBot extends TelegramLongPollingBot {
         }
     }
 
-    /** Нейро-объяснение: генерация в отдельном потоке, ответ новым сообщением. */
+    /** Нейро-объяснение: генерация в отдельном потоке, ответ новым сообщением с оценкой. */
     private void handleExplain(CallbackQuery callbackQuery, long termId) {
-        long chatId = callbackQuery.getMessage().getChatId();
+        long chatId = callbackQuery.getMessage() != null ? callbackQuery.getMessage().getChatId() : 0;
         entryService.findTermById(termId).ifPresentOrElse(term -> {
             String termName = term.getDisplayForm();
             answerCallback(callbackQuery.getId(), "🧠 Думаю… это займет до 20 секунд");
@@ -555,10 +699,14 @@ public class TermFindBot extends TelegramLongPollingBot {
                                 .text("❌ Недостаточно данных для объяснения «" + termName + "»").build());
                         return;
                     }
-                    String text = "🧠 " + explanation.get().text()
-                            + "\n\n📚 Источники: " + explanation.get().sources();
+                    String text = "🧠 " + BotMessageFormatter.mdToHtml(explanation.get().text())
+                            + "\n\n📚 Источники: " + BotMessageFormatter.esc(explanation.get().sources());
                     executeSilently(SendMessage.builder().chatId(chatId)
-                            .text(BotMessageFormatter.esc(text)).parseMode(ParseMode.HTML).build());
+                            .text(text)
+                            .parseMode(ParseMode.HTML)
+                            .replyMarkup(BotMessageFormatter.buildAnswerFeedbackKeyboard(
+                                    termId, AnswerFeedback.Kind.EXPLAIN.name()))
+                            .build());
                 } catch (Exception e) {
                     log.error("Ошибка генерации объяснения", e);
                     executeSilently(SendMessage.builder().chatId(chatId)
@@ -566,34 +714,6 @@ public class TermFindBot extends TelegramLongPollingBot {
                 }
             });
         }, () -> answerCallback(callbackQuery.getId(), "Термин не найден"));
-    }
-
-    private InlineKeyboardMarkup withExtraButtons(InlineKeyboardMarkup keyboard, Long termId) {
-        if (termId == null) return keyboard;
-        List<List<org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton>> rows =
-                new java.util.ArrayList<>(keyboard != null ? keyboard.getKeyboard() : List.of());
-        if (summaryService.isEnabled()) {
-            rows.add(0, List.of(
-                    org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton.builder()
-                            .text("🧠 Объяснить").callbackData("explain:" + termId).build(),
-                    org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton.builder()
-                            .text("💡 Проще").callbackData("simpler:" + termId).build(),
-                    org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton.builder()
-                            .text("🔬 Строже").callbackData("stricter:" + termId).build()));
-        }
-        if (visionService.isEnabled()) {
-            rows.add(List.of(
-                    org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton.builder()
-                            .text("🖼 Описать схемы").callbackData("vision:" + termId).build()));
-        }
-        rows.add(List.of(
-                org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton.builder()
-                        .text("📄 Word").callbackData("word:" + termId).build(),
-                org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton.builder()
-                        .text("👍 Верное").callbackData("vote:" + termId + ":up").build(),
-                org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton.builder()
-                        .text("👎 Не то").callbackData("vote:" + termId + ":down").build()));
-        return new InlineKeyboardMarkup(rows);
     }
 
     /** 🖼 Описать схемы: Vision-описания страниц с определениями (кэш в images.description). */
@@ -679,13 +799,15 @@ public class TermFindBot extends TelegramLongPollingBot {
         }
     }
 
-    /** 💡 Проще / 🔬 Строже: LLM-вариант объяснения (кэшируется в llm_cache). */
+    /** 💡 Проще — словами в чат; 🔬 Строже — Word с отрендеренными LaTeX-формулами. */
     private void handleVariant(CallbackQuery callbackQuery, String data) {
         boolean stricter = data.startsWith("stricter:");
         long termId = Long.parseLong(data.substring((stricter ? "stricter:" : "simpler:").length()));
         long chatId = callbackQuery.getMessage() != null ? callbackQuery.getMessage().getChatId() : 0;
         entryService.findTermById(termId).ifPresentOrElse(term -> {
-            answerCallback(callbackQuery.getId(), stricter ? "🔬 Формулирую строго… до 20 сек" : "💡 Упрощаю… до 20 сек");
+            answerCallback(callbackQuery.getId(), stricter
+                    ? "🔬 Собираю Word с формулами… до 20 сек"
+                    : "💡 Упрощаю… до 20 сек");
             aiExecutor.submit(() -> {
                 try {
                     var variant = summaryService.variant(term.getDisplayForm(), stricter);
@@ -694,10 +816,29 @@ public class TermFindBot extends TelegramLongPollingBot {
                                 .text("❌ Недостаточно данных для «" + term.getDisplayForm() + "»").build());
                         return;
                     }
-                    String text = (stricter ? "🔬 " : "💡 ") + variant.get().text()
-                            + "\n\n📚 Источники: " + variant.get().sources();
-                    executeSilently(SendMessage.builder().chatId(chatId)
-                            .text(BotMessageFormatter.esc(text)).parseMode(ParseMode.HTML).build());
+                    if (stricter) {
+                        byte[] docx = wordService.exportStrict(term.getDisplayForm(), variant.get().text(),
+                                entryService.presentable(term.getDisplayForm()));
+                        execute(SendDocument.builder()
+                                .chatId(chatId)
+                                .document(new InputFile(new java.io.ByteArrayInputStream(docx),
+                                        WordService.fileName(term.getDisplayForm())))
+                                .build());
+                        executeSilently(SendMessage.builder().chatId(chatId)
+                                .text("🔬 Строгое определение — в файле, формулы отрендерены из LaTeX.")
+                                .replyMarkup(BotMessageFormatter.buildAnswerFeedbackKeyboard(
+                                        termId, AnswerFeedback.Kind.STRICTER.name()))
+                                .build());
+                    } else {
+                        String text = "💡 " + BotMessageFormatter.mdToHtml(variant.get().text())
+                                + "\n\n📚 Источники: " + BotMessageFormatter.esc(variant.get().sources());
+                        executeSilently(SendMessage.builder().chatId(chatId)
+                                .text(text)
+                                .parseMode(ParseMode.HTML)
+                                .replyMarkup(BotMessageFormatter.buildAnswerFeedbackKeyboard(
+                                        termId, AnswerFeedback.Kind.SIMPLER.name()))
+                                .build());
+                    }
                 } catch (Exception e) {
                     log.error("Ошибка генерации варианта", e);
                     executeSilently(SendMessage.builder().chatId(chatId)
@@ -727,28 +868,6 @@ public class TermFindBot extends TelegramLongPollingBot {
         } catch (Exception e) {
             log.error("Не удалось отрисовать страницу", e);
             answerCallback(callbackQuery.getId(), "Не удалось отрисовать страницу");
-        }
-    }
-
-    /** Перестраивает клавиатуру сообщения: без только что подтвержденной кнопки. */
-    private void updateModerationKeyboard(Message message, long approvedEntryId) {
-        try {
-            Optional<Entry> approvedEntry = entryService.findEntryWithBook(approvedEntryId);
-            if (approvedEntry.isEmpty()) return;
-
-            Term term = approvedEntry.get().getTerm();
-            List<Entry> remaining = entryService.findNotApprovedEntriesByTerm(term.getDisplayForm());
-            InlineKeyboardMarkup newKeyboard = BotMessageFormatter.buildModerationKeyboard(
-                    remaining, config.adminId(), config.adminId(),
-                    term.isFinalized() ? null : term.getId());
-
-            execute(EditMessageReplyMarkup.builder()
-                    .chatId(message.getChatId())
-                    .messageId(message.getMessageId())
-                    .replyMarkup(newKeyboard)
-                    .build());
-        } catch (TelegramApiException e) {
-            log.error("Не удалось обновить клавиатуру", e);
         }
     }
 

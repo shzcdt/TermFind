@@ -24,6 +24,7 @@ dependencies {
     implementation("org.apache.pdfbox:pdfbox:3.0.8")
     implementation("com.github.rholder:snowball-stemmer:1.3.0.581.1")
     implementation("org.apache.poi:poi-ooxml:5.3.0")
+    implementation("org.scilab.forge:jlatexmath:1.0.7")
 
     implementation("org.springframework.boot:spring-boot-starter-data-jpa")
     implementation("org.springframework.boot:spring-boot-starter-web")

@@ -7,6 +7,8 @@ import org.apache.poi.xwpf.usermodel.XWPFParagraph;
 import org.apache.poi.xwpf.usermodel.XWPFRun;
 import org.idubinov.termfind.models.Book;
 import org.idubinov.termfind.models.Entry;
+import org.idubinov.termfind.util.LatexRenderer;
+import org.idubinov.termfind.util.LatexSegments;
 import org.idubinov.termfind.util.PdfPageRenderer;
 import org.idubinov.termfind.util.TocMapper;
 import org.slf4j.Logger;
@@ -150,7 +152,72 @@ public class WordService {
 
     private void paragraph(XWPFDocument doc, String text) {
         XWPFParagraph p = doc.createParagraph();
-        p.createRun().setText(text.replaceAll("\\s+", " ").trim());
+        p.createRun().setText(org.idubinov.termfind.bot.BotMessageFormatter.stripMarkdown(
+                text.replaceAll("\\s+", " ").trim()));
+    }
+
+    /**
+     * 🔬 Строгое определение отдельным документом: текстовые сегменты параграфами,
+     * $формулы$ — картинками (JLaTeXMath); не отрендерившаяся формула — моноширинным текстом.
+     */
+    public byte[] exportStrict(String term, String strictText, List<Entry> presentable) {
+        try (XWPFDocument doc = new XWPFDocument();
+             ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+
+            heading(doc, "🔬 Строгое определение", 20);
+            subtitle(doc, term);
+
+            for (LatexSegments.Segment segment : LatexSegments.parse(strictText)) {
+                if (segment.text() != null) {
+                    String text = segment.text().replaceAll("\\s+", " ").trim();
+                    if (!text.isBlank()) paragraph(doc, text);
+                } else {
+                    byte[] png = LatexRenderer.renderPng(segment.latex(), 18);
+                    if (png != null) {
+                        centeredImage(doc, png);
+                    } else {
+                        mono(doc, "$" + segment.latex() + "$");
+                    }
+                }
+            }
+
+            heading(doc, "🔗 Источники", 14);
+            sources(doc, presentable);
+
+            doc.write(out);
+            return out.toByteArray();
+        } catch (Exception e) {
+            throw new IllegalStateException("Не удалось собрать Word: " + e.getMessage(), e);
+        }
+    }
+
+    private void centeredImage(XWPFDocument doc, byte[] png) throws Exception {
+        BufferedImage buffered = ImageIO.read(new ByteArrayInputStream(png));
+        int width = IMAGE_WIDTH_PT;
+        int height = (int) ((double) buffered.getHeight() / buffered.getWidth() * width);
+        if (height > 200) { // формулы узкие и высокие — не даём разрастаться
+            height = 200;
+            width = (int) ((double) buffered.getWidth() / buffered.getHeight() * height);
+        }
+        XWPFParagraph p = doc.createParagraph();
+        p.setAlignment(org.apache.poi.xwpf.usermodel.ParagraphAlignment.CENTER);
+        p.createRun().addPicture(new ByteArrayInputStream(png), Document.PICTURE_TYPE_PNG,
+                "formula.png", Units.toEMU(width), Units.toEMU(height));
+    }
+
+    private void subtitle(XWPFDocument doc, String text) {
+        XWPFParagraph p = doc.createParagraph();
+        XWPFRun run = p.createRun();
+        run.setText(text);
+        run.setItalic(true);
+        run.setFontSize(13);
+    }
+
+    private void mono(XWPFDocument doc, String text) {
+        XWPFParagraph p = doc.createParagraph();
+        XWPFRun run = p.createRun();
+        run.setText(text);
+        run.setFontFamily("Courier New");
     }
 
     private void sourceLine(XWPFDocument doc, Entry entry) {
